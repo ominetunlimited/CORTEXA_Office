@@ -3,10 +3,15 @@ import type {
   DB, Route, User, Organisation, Department, Correspondence, DocumentRecord, Matter,
   Meeting, TaskItem, ApprovalRecord, Contact, NotificationItem, AuditEntry, CommentItem,
   EmailRecord, Role, SecurityLevel, CorrStatus, TaskStatus, ResponseOption, DocCategory,
-  Priority, MatterEvent, ApprovalState,
+  Priority, MatterEvent, ApprovalState, SessionInfo, PendingSignup, OrgType,
 } from './types';
 import { buildSeed, SEED_VERSION } from './seed';
 import { uid, daysUntil, pad, d } from './utils';
+import {
+  hashSecret, verifySecret, checkPassword, isValidEmail, normalizeEmail,
+  generateOtp, otpExpiresAt, OTP_RULES, lockoutAfterFailures, deviceLabel,
+  SESSION_IDLE_MS, SESSION_ABS_MS, sanitizeFilename, storageKey,
+} from './security';
 
 const LS_KEY = `cortexa.db.v${SEED_VERSION}`;
 
@@ -68,9 +73,24 @@ interface StoreCtx {
   users: User[];
   route: Route;
   nav: (r: Route) => void;
-  login: (email: string, password: string) => { ok: boolean; error?: string };
-  loginAs: (userId: string) => void;
-  logout: () => void;
+  /* auth & security */
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string; lockedS?: number }>;
+  demoLogin: (userId: string) => void;
+  logout: (reason?: string) => void;
+  registerSignup: (input: { firstName: string; lastName: string; orgName: string; orgType: OrgType; country: string; email: string; password: string }) => { ok: boolean; error?: string; field?: string };
+  resendCode: (email: string) => { ok: boolean; error?: string; waitS?: number };
+  verifyEmail: (email: string, code: string) => { ok: boolean; error?: string; expired?: boolean; attemptsLeft?: number };
+  changeSignupEmail: (oldEmail: string, newEmail: string) => { ok: boolean; error?: string };
+  demoMailFor: (email: string) => { code: string; sentAt: number } | null;
+  completeSetup: (input: { address: string; phone: string; logoInitials: string; refPrefix: string; departments: { name: string; code: string }[]; inviteEmails: string[] }) => { ok: boolean; error?: string };
+  changePassword: (current: string, next: string) => { ok: boolean; error?: string };
+  updateProfile: (patch: Partial<Pick<User, 'name' | 'title' | 'phone' | 'country'>>) => void;
+  mySessions: SessionInfo[];
+  revokeSession: (id: string) => void;
+  revokeOtherSessions: () => void;
+  touchSession: () => void;
+  securityLog: AuditEntry[];
+  logEvent: (action: string, recordType: string, target: string) => void;
   toasts: Toast[];
   toast: (msg: string, kind?: Toast['kind']) => void;
   dismissToast: (id: string) => void;
@@ -105,17 +125,12 @@ interface StoreCtx {
   updateContact: (id: string, patch: Partial<Contact>) => void;
   addDepartment: (input: Omit<Department, 'id' | 'orgId'>) => { ok: boolean; error?: string };
   updateDepartment: (id: string, patch: Partial<Department>) => void;
-  addUser: (input: Omit<User, 'id' | 'orgId' | 'initials' | 'color'>) => { ok: boolean; error?: string };
+  addUser: (input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt'>) => { ok: boolean; error?: string };
   updateUser: (id: string, patch: Partial<User>) => void;
   updateOrg: (patch: Partial<Organisation>) => void;
   setNotificationPrefs: (prefs: Organisation['notificationPrefs']) => void;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
-  onboard: (data: {
-    name: string; type: Organisation['type']; logoInitials: string; address: string; email: string; phone: string;
-    adminName: string; adminEmail: string; adminTitle: string; adminPwd: string;
-    departments: { name: string; code: string }[]; inviteEmails: string[]; refPrefix: string;
-  }) => { ok: boolean; error?: string };
   resetDemo: () => void;
 }
 
@@ -218,35 +233,342 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const canUser = useCallback((cap: Capability) => can(me?.role, cap), [me]);
 
+  /* org-scoped record lookup — the IDOR boundary. No mutation may touch a
+     record unless it belongs to the caller's organisation. */
+  const own = <T extends { id: string; orgId: string }>(d: DB, list: T[], id: string | undefined): T | undefined =>
+    id ? list.find((x) => x.id === id && x.orgId === me?.orgId) : undefined;
+
+  /* failed cross-tenant / forged-id access attempts are security events */
+  const logDenied = (recordType: string, id: string) => {
+    mutate((dd) => { secAudit(dd, `Denied access to ${recordType} (outside organisation)`, id, 'denied', me); });
+    toast('That record is not in your organisation\u2019s register.', 'error');
+  };
+
+  const secAudit = (d: DB, action: string, target: string, result: 'success' | 'denied', user?: User | null) => {
+    d.audit.unshift({
+      id: uid('au'), orgId: user?.orgId ?? d.orgs[0]?.id ?? '', at: new Date().toISOString(),
+      userId: user?.id ?? 'unknown', userName: user?.name ?? 'Unknown',
+      action, recordType: 'security', target, result,
+    });
+    if (d.audit.length > 600) d.audit.length = 600;
+  };
+
+  const issueOtp = (d: DB, email: string, purpose: 'signup' | 'reset', signupId?: string): string => {
+    const code = generateOtp();
+    d.security.otp[email] = {
+      hash: hashSecret(code, `otp::${email}`), email, expiresAt: otpExpiresAt(),
+      attempts: 0, resends: (d.security.otp[email]?.resends ?? 0), lastSentAt: Date.now(),
+      purpose, signupId,
+    };
+    d.security.lastCodeEcho[email] = code; // demo mail-relay outbox only — production: SMTP provider sees this, never the client
+    return code;
+  };
+
+  const createSession = (d: DB, userId: string): string => {
+    const sid = uid('sess');
+    d.sessions.unshift({ id: sid, userId, createdAt: Date.now(), lastSeen: Date.now(), device: deviceLabel(), ip: '105.112.34.18' });
+    if (d.sessions.length > 40) d.sessions.length = 40;
+    d.session.userId = userId;
+    d.session.sessionId = sid;
+    return sid;
+  };
+
   /* ── auth ── */
 
-  const login = useCallback((email: string, password: string) => {
-    const u = db.users.find((x) => x.email.toLowerCase() === email.trim().toLowerCase() && x.active);
-    if (!u) return { ok: false, error: 'No active account matches that email address.' };
-    const expected = u.pwd ?? 'cortexa';
-    if (password !== expected) return { ok: false, error: 'Incorrect password. Demo accounts use the password shown on this screen.' };
+  const login = useCallback(async (email: string, password: string) => {
+    const em = normalizeEmail(email);
+    if (!isValidEmail(em)) return { ok: false, error: 'Enter a valid email address.' };
+    /* progressive lockout check */
+    const pre = lockoutAfterFailures(db.security.loginAttempts[em]);
+    if (pre.locked && (db.security.loginAttempts[em]?.lockedUntil ?? 0) > Date.now()) {
+      return { ok: false, error: `Too many failed attempts. Try again in ${pre.waitS}s.`, lockedS: pre.waitS };
+    }
+    await new Promise((r) => setTimeout(r, 550)); // deliberate server-like latency + timing equalisation
+    const u = db.users.find((x) => x.email.toLowerCase() === em && x.active);
+    const hashOk = !!u && verifySecret(password, u.pwdHash ?? hashSecret('cortexa'));
+    if (!u || !hashOk) {
+      mutate((dd) => {
+        const res = lockoutAfterFailures(dd.security.loginAttempts[em]);
+        dd.security.loginAttempts[em] = res.next;
+        secAudit(dd, res.locked ? `Sign-in locked for ${res.waitS}s after repeated failures` : 'Failed sign-in attempt (invalid credentials)', em, 'denied', u);
+      });
+      const st = db.security.loginAttempts[em];
+      const fails = (st?.count ?? 0) + 1;
+      if (fails >= 5) return { ok: false, error: 'Too many failed attempts. The account is temporarily locked.', lockedS: 30 };
+      return { ok: false, error: 'Incorrect email or password. Demo accounts use the password shown on this screen.' };
+    }
+    if (!u.emailVerified) return { ok: false, error: 'This email address has not been verified yet. Complete verification to activate the account.' };
     mutate((dd) => {
-      dd.session.userId = u.id;
-      audit(dd, 'User signed in', 'session', `${u.name} signed in`, u.id);
+      dd.security.loginAttempts[em] = { count: 0, lockedUntil: 0 };
+      createSession(dd, u.id);
+      secAudit(dd, 'User signed in', `${u.name} · ${deviceLabel()}`, 'success', u);
     });
     setRoute({ name: 'dashboard' });
     return { ok: true };
   }, [db, mutate]);
 
-  const loginAs = useCallback((userId: string) => {
+  /* documented development shortcut — still creates a real, revocable session */
+  const demoLogin = useCallback((userId: string) => {
     const u = db.users.find((x) => x.id === userId);
     if (!u) return;
     mutate((dd) => {
-      dd.session.userId = u.id;
-      audit(dd, 'User signed in', 'session', `${u.name} signed in`, u.id);
+      createSession(dd, u.id);
+      secAudit(dd, 'User signed in (demo shortcut)', `${u.name} · ${deviceLabel()}`, 'success', u);
     });
     setRoute({ name: 'dashboard' });
     toast(`Signed in as ${u.name}`, 'info');
   }, [db, mutate, toast]);
 
-  const logout = useCallback(() => {
-    mutate((dd) => { audit(dd, 'User signed out', 'session', `${me?.name ?? 'User'} signed out`); dd.session.userId = null; });
-  }, [mutate, me]);
+  const logout = useCallback((reason?: string) => {
+    mutate((dd) => {
+      const sid = dd.session.sessionId;
+      if (sid) dd.sessions = dd.sessions.filter((s) => s.id !== sid);
+      secAudit(dd, reason ?? 'User signed out', `${me?.name ?? 'User'} · ${deviceLabel()}`, 'success', me);
+      dd.session.userId = null;
+      dd.session.sessionId = null;
+    });
+    if (reason) toast(reason, 'info');
+  }, [mutate, me, toast]);
+
+  /* ── signup, verification & onboarding ── */
+
+  const registerSignup = useCallback((input: { firstName: string; lastName: string; orgName: string; orgType: OrgType; country: string; email: string; password: string }) => {
+    const em = normalizeEmail(input.email);
+    if (!isValidEmail(em)) return { ok: false, error: 'Enter a valid email address.', field: 'email' };
+    if (db.users.some((u) => u.email.toLowerCase() === em)) return { ok: false, error: 'An account with this email already exists. Sign in instead.', field: 'email' };
+    if (db.pendingSignups.some((p) => p.email === em)) return { ok: false, error: 'A verification for this email is already in progress — enter the code below.', field: 'email' };
+    const pw = checkPassword(input.password);
+    if (!pw.ok) return { ok: false, error: pw.reason ?? 'Choose a stronger password.', field: 'password' };
+    mutate((dd) => {
+      dd.pendingSignups.push({
+        id: uid('su'), firstName: input.firstName.trim(), lastName: input.lastName.trim(),
+        orgName: input.orgName.trim(), orgType: input.orgType, country: input.country,
+        email: em, pwdHash: hashSecret(input.password), termsAcceptedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      });
+      issueOtp(dd, em, 'signup', dd.pendingSignups[dd.pendingSignups.length - 1].id);
+      secAudit(dd, 'Verification code issued (signup)', em, 'success');
+    });
+    return { ok: true };
+  }, [db, mutate]);
+
+  const resendCode = useCallback((email: string) => {
+    const em = normalizeEmail(email);
+    const rec = db.security.otp[em];
+    const pending = db.pendingSignups.find((p) => p.email === em);
+    if (!rec || !pending) return { ok: false, error: 'No verification in progress for this address.' };
+    const waitMs = rec.lastSentAt + OTP_RULES.resendCooldownMs - Date.now();
+    if (waitMs > 0) return { ok: false, error: `Wait ${Math.ceil(waitMs / 1000)}s before requesting another code.`, waitS: Math.ceil(waitMs / 1000) };
+    if (rec.resends >= OTP_RULES.maxResends) return { ok: false, error: 'Resend limit reached for this address. Try again later.' };
+    mutate((dd) => {
+      const r = dd.security.otp[em];
+      if (r) r.resends += 1;
+      issueOtp(dd, em, 'signup', pending.id);
+      dd.security.otp[em].resends = (rec.resends + 1);
+      secAudit(dd, 'Verification code re-issued', em, 'success');
+    });
+    return { ok: true };
+  }, [db, mutate]);
+
+  const verifyEmail = useCallback((email: string, code: string) => {
+    const em = normalizeEmail(email);
+    const rec = db.security.otp[em];
+    if (!rec) return { ok: false, error: 'No verification in progress for this address.' };
+    if (Date.now() > rec.expiresAt) return { ok: false, error: 'Code expired', expired: true };
+    if (rec.attempts >= OTP_RULES.maxAttempts) return { ok: false, error: 'Too many incorrect attempts. Request a new code.', expired: true };
+    if (!verifySecret(code, rec.hash, `otp::${em}`)) {
+      mutate((dd) => {
+        const r = dd.security.otp[em];
+        if (r) r.attempts += 1;
+        secAudit(dd, 'Incorrect verification code entered', em, 'denied');
+      });
+      const left = OTP_RULES.maxAttempts - (rec.attempts + 1);
+      return { ok: false, error: 'That code is incorrect. Please check your email and try again.', attemptsLeft: Math.max(0, left) };
+    }
+    /* success — provision organisation + admin, single-use invalidation */
+    let adminId = '';
+    mutate((dd) => {
+      const su = dd.pendingSignups.find((p) => p.email === em);
+      delete dd.security.otp[em];
+      delete dd.security.lastCodeEcho[em];
+      if (!su) return;
+      const oid = uid('org');
+      dd.orgs.push({
+        id: oid, name: su.orgName, type: su.orgType, logoInitials: su.orgName.slice(0, 2).toUpperCase(),
+        address: '', email: em, phone: '', country: su.country, refPrefix: su.orgName.slice(0, 3).toUpperCase().replace(/[^A-Z]/g, 'X'),
+        approvalChain: ['Department Head', 'Executive', 'Organisation Admin'],
+        notificationPrefs: [
+          { category: 'Meetings', inApp: true, email: true, browser: false },
+          { category: 'Tasks', inApp: true, email: true, browser: false },
+          { category: 'Approvals', inApp: true, email: true, browser: false },
+          { category: 'Correspondence', inApp: true, email: false, browser: false },
+          { category: 'Deadlines', inApp: true, email: true, browser: false },
+          { category: 'System', inApp: true, email: false, browser: false },
+        ],
+        setupComplete: false, createdAt: new Date().toISOString(),
+      });
+      adminId = uid('u');
+      const name = `${su.firstName} ${su.lastName}`;
+      dd.users.push({
+        id: adminId, orgId: oid, name, email: em, title: 'Administrator', role: 'Organisation Admin',
+        active: true, initials: `${su.firstName[0] ?? ''}${su.lastName[0] ?? ''}`.toUpperCase(),
+        color: '#146355', pwdHash: su.pwdHash, emailVerified: true, country: su.country,
+        pwdChangedAt: new Date().toISOString(),
+      });
+      dd.pendingSignups = dd.pendingSignups.filter((p) => p.email !== em);
+      createSession(dd, adminId);
+      secAudit(dd, 'Email verified — account activated', `${em} · ${name}`, 'success', dd.users[dd.users.length - 1]);
+    });
+    setRoute({ name: 'dashboard' });
+    toast('Email verified — account activated');
+    return { ok: true };
+  }, [db, mutate, toast]);
+
+  const changeSignupEmail = useCallback((oldEmail: string, newEmail: string) => {
+    const oe = normalizeEmail(oldEmail);
+    const ne = normalizeEmail(newEmail);
+    if (!isValidEmail(ne)) return { ok: false, error: 'Enter a valid email address.' };
+    if (db.users.some((u) => u.email.toLowerCase() === ne)) return { ok: false, error: 'An account with this email already exists.' };
+    mutate((dd) => {
+      const su = dd.pendingSignups.find((p) => p.email === oe);
+      if (!su) return;
+      su.email = ne;
+      delete dd.security.otp[oe];
+      delete dd.security.lastCodeEcho[oe];
+      issueOtp(dd, ne, 'signup', su.id);
+      secAudit(dd, 'Signup email changed & code re-issued', `${oe} → ${ne}`, 'success');
+    });
+    return { ok: true };
+  }, [db, mutate]);
+
+  const demoMailFor = useCallback((email: string) => {
+    const em = normalizeEmail(email);
+    const code = db.security.lastCodeEcho[em];
+    const rec = db.security.otp[em];
+    if (!code || !rec) return null;
+    return { code, sentAt: rec.lastSentAt };
+  }, [db]);
+
+  const completeSetup = useCallback((input: { address: string; phone: string; logoInitials: string; refPrefix: string; departments: { name: string; code: string }[]; inviteEmails: string[] }) => {
+    if (!me) return { ok: false, error: 'Not signed in.' };
+    const depCodes = new Set<string>();
+    for (const dep of input.departments) {
+      const c = dep.code.trim().toUpperCase();
+      if (depCodes.has(c)) return { ok: false, error: `Duplicate department code "${c}".` };
+      depCodes.add(c);
+    }
+    mutate((dd) => {
+      const o = dd.orgs.find((x) => x.id === me.orgId);
+      if (!o) return;
+      o.address = input.address.trim();
+      o.phone = input.phone.trim();
+      o.logoInitials = (input.logoInitials || o.name.slice(0, 2)).toUpperCase().slice(0, 3);
+      o.refPrefix = (input.refPrefix || 'ORG').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 5) || 'ORG';
+      o.setupComplete = true;
+      const depIds: string[] = [];
+      input.departments.forEach((dep) => {
+        const did = uid('dep');
+        depIds.push(did);
+        dd.departments.push({ id: did, orgId: o.id, name: dep.name.trim(), code: dep.code.trim().toUpperCase(), description: '' });
+      });
+      const admin = dd.users.find((u) => u.id === me.id);
+      if (admin && depIds[0]) admin.departmentId = depIds[0];
+      const colors = ['#146355', '#9C6B1E', '#3E5C76', '#A8402C', '#2E7D4F'];
+      input.inviteEmails.map(normalizeEmail).filter((em) => em && isValidEmail(em) && !dd.users.some((u) => u.orgId === o.id && u.email === em)).forEach((em, i) => {
+        dd.users.push({
+          id: uid('u'), orgId: o.id,
+          name: em.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, (ch) => ch.toUpperCase()),
+          email: em, title: 'Staff', role: 'Staff', departmentId: depIds[i % Math.max(depIds.length, 1)],
+          active: true, initials: em.slice(0, 2).toUpperCase(), color: colors[i % colors.length],
+          pwdHash: hashSecret('cortexa'), emailVerified: false, pwdChangedAt: new Date().toISOString(),
+        });
+      });
+      audit(dd, 'Organisation setup completed', 'organisation', o.name, o.id);
+      dd.notifications.unshift({ id: uid('nt'), orgId: o.id, userId: me.id, category: 'System', title: 'Workspace ready', body: `${o.name} is configured. Register your first correspondence to open the institutional register.`, at: new Date().toISOString(), read: false, link: { name: 'dashboard' } });
+    });
+    toast('Organisation configured — welcome to Cortexa');
+    setRoute({ name: 'dashboard' });
+    return { ok: true };
+  }, [me, mutate, toast]);
+
+  /* ── account security ── */
+
+  const changePassword = useCallback((current: string, next: string) => {
+    if (!me) return { ok: false, error: 'Not signed in.' };
+    if (!verifySecret(current, me.pwdHash ?? hashSecret('cortexa'))) return { ok: false, error: 'Current password is incorrect.' };
+    const pw = checkPassword(next);
+    if (!pw.ok) return { ok: false, error: pw.reason ?? 'Choose a stronger password.' };
+    mutate((dd) => {
+      const u = dd.users.find((x) => x.id === me.id && x.orgId === me.orgId);
+      if (!u) return;
+      u.pwdHash = hashSecret(next);
+      u.pwdChangedAt = new Date().toISOString();
+      /* invalidate every other session on password change */
+      const keep = dd.session.sessionId;
+      dd.sessions = dd.sessions.filter((s) => s.id === keep);
+      secAudit(dd, 'Password changed — other sessions revoked', `${u.name} · ${deviceLabel()}`, 'success', u);
+      dd.notifications.unshift({ id: uid('nt'), orgId: u.orgId, userId: u.id, category: 'System', title: 'Security notice', body: 'Your password was changed and other active sessions were signed out.', at: new Date().toISOString(), read: false });
+    });
+    toast('Password changed — other sessions signed out');
+    return { ok: true };
+  }, [me, mutate, toast]);
+
+  const updateProfile = useCallback((patch: Partial<Pick<User, 'name' | 'title' | 'phone' | 'country'>>) => {
+    mutate((dd) => {
+      const u = dd.users.find((x) => x.id === me?.id && x.orgId === me?.orgId);
+      if (!u) return;
+      Object.assign(u, patch);
+      u.initials = u.name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+      audit(dd, 'Updated profile', 'user', u.name, u.id);
+    });
+    toast('Profile saved');
+  }, [me, mutate, toast]);
+
+  const mySessions = useMemo(
+    () => db.sessions.filter((s) => s.userId === me?.id).sort((a, b) => b.lastSeen - a.lastSeen),
+    [db.sessions, me],
+  );
+
+  const revokeSession = useCallback((id: string) => {
+    mutate((dd) => {
+      const s = dd.sessions.find((x) => x.id === id && x.userId === me?.id);
+      if (!s) return;
+      dd.sessions = dd.sessions.filter((x) => x.id !== id);
+      secAudit(dd, 'Session revoked', `${s.device} · ${s.ip}`, 'success', me);
+    });
+    toast('Session revoked', 'info');
+  }, [me, mutate, toast]);
+
+  const revokeOtherSessions = useCallback(() => {
+    mutate((dd) => {
+      const keep = dd.session.sessionId;
+      const removed = dd.sessions.filter((s) => s.userId === me?.id && s.id !== keep).length;
+      dd.sessions = dd.sessions.filter((s) => !(s.userId === me?.id && s.id !== keep));
+      secAudit(dd, `Signed out ${removed} other session${removed === 1 ? '' : 's'}`, `${me?.name} · ${deviceLabel()}`, 'success', me);
+    });
+    toast('Signed out of all other sessions', 'info');
+  }, [me, mutate, toast]);
+
+  const touchSession = useCallback(() => {
+    const sid = db.session.sessionId;
+    if (!sid) return;
+    const s = db.sessions.find((x) => x.id === sid);
+    if (!s) return;
+    if (Date.now() - s.lastSeen < 20000) return; // throttle writes
+    mutate((dd) => {
+      const cur = dd.sessions.find((x) => x.id === sid);
+      if (cur) cur.lastSeen = Date.now();
+    });
+  }, [db, mutate]);
+
+  const securityLog = useMemo(
+    () => db.audit.filter((a) => a.recordType === 'security' && (!me || a.orgId === me.orgId || a.orgId === '')).slice(0, 30),
+    [db.audit, me],
+  );
+
+  const logEvent = useCallback((action: string, recordType: string, target: string) => {
+    mutate((dd) => { audit(dd, action, recordType, target); });
+  }, [mutate]);
 
   /* ── correspondence ── */
 
@@ -287,8 +609,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const updateCorrespondence = useCallback((id: string, patch: Partial<Correspondence>, label = 'Updated correspondence', notifyUserId?: string, notifyMsg?: string) => {
+    if (!own(db, db.correspondence, id)) { logDenied('correspondence', id); return; }
     mutate((dd) => {
-      const c = dd.correspondence.find((x) => x.id === id);
+      const c = own(dd, dd.correspondence, id);
       if (!c) return;
       Object.assign(c, patch);
       audit(dd, label, 'correspondence', c.subject, c.id);
@@ -299,8 +622,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const respondCorrespondence = useCallback((id: string, fields: { subject: string; recipient: string; recipientOrg?: string; method: Correspondence['dispatchMethod']; notes?: string }) => {
     if (!canUser('respond')) { toast('Your role cannot dispatch responses.', 'error'); return null; }
     let out: Correspondence | null = null;
+    if (!own(db, db.correspondence, id)) { logDenied('correspondence', id); return null; }
     mutate((dd) => {
-      const src = dd.correspondence.find((x) => x.id === id);
+      const src = own(dd, dd.correspondence, id);
       if (!src) return;
       const c: Correspondence = {
         id: uid('cr'), orgId: me!.orgId, ref: refNext(dd, 'OUT', 'OUT'),
@@ -326,15 +650,22 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const addDocument = useCallback((input: Partial<DocumentRecord> & Pick<DocumentRecord, 'title' | 'category' | 'fileName'>) => {
     if (!canUser('create')) { toast('Your role is read-only.', 'error'); return null; }
+    /* server-layer upload validation — never trust the client-supplied filename */
+    const safeName = sanitizeFilename(input.fileName);
+    const ext = (safeName.split('.').pop() ?? '').toLowerCase();
+    const ALLOWED = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'tiff', 'tif', 'txt', 'csv'];
+    if (!ALLOWED.includes(ext)) { toast(`"${ext || 'unknown'}" files are not accepted by the records vault.`, 'error'); return null; }
+    if ((input.sizeKb ?? 0) > 15 * 1024) { toast('File exceeds the 15 MB institutional upload limit.', 'error'); return null; }
     let created: DocumentRecord | null = null;
     mutate((dd) => {
-      const dept = dd.departments.find((x) => x.id === input.departmentId);
+      const dept = dd.departments.find((x) => x.id === input.departmentId && x.orgId === me!.orgId);
       const rec: DocumentRecord = {
         id: uid('doc'), orgId: me!.orgId, fileNumber: refNext(dd, 'DOC', dept?.code ?? 'GEN'),
         title: input.title, category: input.category, departmentId: input.departmentId,
         ownerId: me!.id, security: input.security ?? 'Internal',
         status: input.status ?? (input.category === 'Memo' ? 'Draft' : 'Approved'),
-        fileName: input.fileName, sizeKb: input.sizeKb ?? 240, mime: input.mime ?? 'application/pdf',
+        fileName: safeName, storageKey: storageKey(me!.orgId, ext),
+        sizeKb: input.sizeKb ?? 240, mime: input.mime ?? 'application/pdf',
         versions: [{ version: '1.0', authorId: me!.id, at: new Date().toISOString(), note: input.versions?.[0]?.note ?? 'Registered copy', fileName: input.fileName, sizeKb: input.sizeKb ?? 240 }],
         body: input.body, ocr: input.ocr ?? false, matterId: input.matterId,
         retention: 'Active', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
@@ -349,8 +680,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const addDocumentVersion = useCallback((docId: string, input: { fileName?: string; sizeKb?: number; note: string; body?: string }) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
     mutate((dd) => {
-      const rec = dd.documents.find((x) => x.id === docId);
+      const rec = own(dd, dd.documents, docId);
       if (!rec) return;
       const last = rec.versions[rec.versions.length - 1];
       const nv = (parseFloat(last.version) + 0.1).toFixed(1);
@@ -367,8 +699,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [mutate, me, toast]);
 
   const updateDocument = useCallback((id: string, patch: Partial<DocumentRecord>, label = 'Updated document metadata') => {
+    if (!own(db, db.documents, id)) { logDenied('document', id); return; }
     mutate((dd) => {
-      const rec = dd.documents.find((x) => x.id === id);
+      const rec = own(dd, dd.documents, id);
       if (!rec) return;
       Object.assign(rec, patch, { updatedAt: new Date().toISOString() });
       audit(dd, label, 'document', rec.title, rec.id);
@@ -376,8 +709,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [mutate]);
 
   const restoreVersion = useCallback((docId: string, version: string) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
     mutate((dd) => {
-      const rec = dd.documents.find((x) => x.id === docId);
+      const rec = own(dd, dd.documents, docId);
       if (!rec) return;
       const v = rec.versions.find((x) => x.version === version);
       if (!v) return;
@@ -421,8 +755,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const updateMatter = useCallback((id: string, patch: Partial<Matter>, label = 'Updated matter') => {
+    if (!own(db, db.matters, id)) { logDenied('matter', id); return; }
     mutate((dd) => {
-      const m = dd.matters.find((x) => x.id === id);
+      const m = own(dd, dd.matters, id);
       if (!m) return;
       Object.assign(m, patch, { updatedAt: new Date().toISOString() });
       audit(dd, label, 'matter', m.title, m.id);
@@ -430,6 +765,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [mutate]);
 
   const linkToMatter = useCallback((recordType: 'correspondence' | 'document' | 'meeting' | 'task', recordId: string, matterId: string) => {
+    if (!own(db, db.matters, matterId)) { logDenied('matter', matterId); return; }
     mutate((dd) => {
       let title = '';
       if (recordType === 'correspondence') { const r = dd.correspondence.find((x) => x.id === recordId); if (r) { r.matterId = matterId; title = r.subject; } }
@@ -475,8 +811,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const updateMeeting = useCallback((id: string, patch: Partial<Meeting>, label = 'Updated meeting') => {
+    if (!own(db, db.meetings, id)) { logDenied('meeting', id); return; }
     mutate((dd) => {
-      const m = dd.meetings.find((x) => x.id === id);
+      const m = own(dd, dd.meetings, id);
       if (!m) return;
       Object.assign(m, patch);
       audit(dd, label, 'meeting', m.title, m.id);
@@ -485,8 +822,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [mutate]);
 
   const setMeetingResponse = useCallback((id: string, response: ResponseOption) => {
+    if (!own(db, db.meetings, id)) { logDenied('meeting', id); return; }
     mutate((dd) => {
-      const m = dd.meetings.find((x) => x.id === id);
+      const m = own(dd, dd.meetings, id);
       if (!m) return;
       m.response = response;
       if (response === 'Accepted') m.status = m.status === 'Scheduled' ? 'Confirmed' : m.status;
@@ -499,8 +837,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [mutate, me, toast]);
 
   const completeMeeting = useCallback((id: string, minutes: { title: string; body: string }) => {
+    if (!own(db, db.meetings, id)) { logDenied('meeting', id); return; }
     mutate((dd) => {
-      const m = dd.meetings.find((x) => x.id === id);
+      const m = own(dd, dd.meetings, id);
       if (!m) return;
       m.status = 'Completed';
       const dept = dd.departments.find((x) => x.id === 'dep_adm');
@@ -547,8 +886,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const updateTask = useCallback((id: string, patch: Partial<TaskItem>, label = 'Updated task') => {
+    if (!own(db, db.tasks, id)) { logDenied('task', id); return; }
     mutate((dd) => {
-      const t = dd.tasks.find((x) => x.id === id);
+      const t = own(dd, dd.tasks, id);
       if (!t) return;
       const wasDone = t.status === 'Completed';
       Object.assign(t, patch);
@@ -566,8 +906,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const decideApproval = useCallback((approvalId: string, decision: Exclude<ApprovalState, 'Pending'>, comment?: string) => {
     if (!canUser('approve')) { toast('Your role cannot decide approvals.', 'error'); return; }
+    if (!own(db, db.approvals, approvalId)) { logDenied('approval', approvalId); return; }
     mutate((dd) => {
-      const a = dd.approvals.find((x) => x.id === approvalId);
+      const a = own(dd, dd.approvals, approvalId);
       if (!a || a.overall !== 'Pending') return;
       const step = a.chain[a.currentStep];
       step.state = decision;
@@ -629,8 +970,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const registerEmail = useCallback((emailId: string, input: { departmentId?: string; assignedTo?: string; priority: Priority; responseDeadline?: string }) => {
     if (!canUser('register')) { toast('Your role cannot register correspondence.', 'error'); return; }
+    if (!own(db, db.emails, emailId)) { logDenied('email', emailId); return; }
     mutate((dd) => {
-      const em = dd.emails.find((x) => x.id === emailId);
+      const em = own(dd, dd.emails, emailId);
       if (!em || em.registeredCorrId) return;
       const dept = dd.departments.find((x) => x.id === input.departmentId);
       const c: Correspondence = {
@@ -655,11 +997,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const archiveRecord = useCallback((kind: 'correspondence' | 'document' | 'matter' | 'meeting' | 'task', id: string) => {
     if (!canUser('archive')) { toast('Your role cannot archive records.', 'error'); return; }
+    if (!(own(db, (db as unknown as Record<string, { id: string; orgId: string }[]>)[kind === 'correspondence' ? 'correspondence' : kind === 'document' ? 'documents' : kind === 'matter' ? 'matters' : kind === 'meeting' ? 'meetings' : 'tasks'] as { id: string; orgId: string }[], id))) { logDenied(kind, id); return; }
     mutate((dd) => {
-      const map: Record<string, { id: string; archived?: boolean; title?: string; subject?: string }[]> = {
+      const map: Record<string, { id: string; orgId: string; archived?: boolean; title?: string; subject?: string }[]> = {
         correspondence: dd.correspondence, document: dd.documents, matter: dd.matters, meeting: dd.meetings, task: dd.tasks,
       };
-      const r = map[kind].find((x) => x.id === id);
+      const r = map[kind].find((x) => x.id === id && x.orgId === me?.orgId);
       if (!r) return;
       r.archived = true;
       if (kind === 'document') (r as unknown as DocumentRecord).status = 'Archived';
@@ -672,10 +1015,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const restoreRecord = useCallback((kind: 'correspondence' | 'document' | 'matter' | 'meeting' | 'task', id: string) => {
     mutate((dd) => {
-      const map: Record<string, { id: string; archived?: boolean; title?: string; subject?: string }[]> = {
+      const map: Record<string, { id: string; orgId: string; archived?: boolean; title?: string; subject?: string }[]> = {
         correspondence: dd.correspondence, document: dd.documents, matter: dd.matters, meeting: dd.meetings, task: dd.tasks,
       };
-      const r = map[kind].find((x) => x.id === id);
+      const r = map[kind].find((x) => x.id === id && x.orgId === me?.orgId);
       if (!r) return;
       r.archived = false;
       if (kind === 'matter') (r as unknown as Matter).status = 'Active';
@@ -698,11 +1041,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, mutate, me, toast]);
 
   const updateContact = useCallback((id: string, patch: Partial<Contact>) => {
+    if (!own(db, db.contacts, id)) { logDenied('contact', id); return; }
     mutate((dd) => {
-      const c = dd.contacts.find((x) => x.id === id);
+      const c = own(dd, dd.contacts, id);
       if (c) { Object.assign(c, patch); audit(dd, 'Updated contact', 'contact', c.name, c.id); }
     });
-  }, [mutate]);
+  }, [db, mutate]);
 
   const addDepartment = useCallback((input: Omit<Department, 'id' | 'orgId'>) => {
     if (!canUser('manageDept')) return { ok: false, error: 'Only administrators can manage departments.' };
@@ -717,39 +1061,55 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [canUser, db, me, mutate]);
 
   const updateDepartment = useCallback((id: string, patch: Partial<Department>) => {
+    if (!own(db, db.departments, id)) { logDenied('department', id); return; }
     mutate((dd) => {
-      const dep = dd.departments.find((x) => x.id === id);
+      const dep = own(dd, dd.departments, id);
       if (dep) { Object.assign(dep, patch); audit(dd, 'Updated department', 'department', dep.name, dep.id); }
     });
-  }, [mutate]);
+  }, [db, mutate]);
 
-  const addUser = useCallback((input: Omit<User, 'id' | 'orgId' | 'initials' | 'color'>) => {
+  const addUser = useCallback((input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt'>) => {
     if (!canUser('manageUsers')) return { ok: false, error: 'Only administrators can manage users.' };
+    const em = normalizeEmail(input.email);
+    if (!isValidEmail(em)) return { ok: false, error: 'Enter a valid email address.' };
     if (db.users.filter((u) => u.orgId === me?.orgId).length >= 20) {
       return { ok: false, error: 'User limit reached (20 seats on this plan).' };
     }
-    if (db.users.some((u) => u.orgId === me?.orgId && u.email.toLowerCase() === input.email.toLowerCase())) {
+    if (db.users.some((u) => u.orgId === me?.orgId && u.email.toLowerCase() === em)) {
       return { ok: false, error: 'A user with this email already exists.' };
     }
     mutate((dd) => {
       const colors = ['#146355', '#9C6B1E', '#3E5C76', '#A8402C', '#2E7D4F'];
       dd.users.push({
-        ...input, id: uid('u'), orgId: me!.orgId,
+        ...input, email: em, id: uid('u'), orgId: me!.orgId,
         initials: input.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase(),
         color: colors[dd.users.length % colors.length],
+        pwdHash: hashSecret('cortexa'),      // temp credential — rotated on first sign-in in production
+        emailVerified: false,                 // invited users verify by email before activation
+        pwdChangedAt: new Date().toISOString(),
       });
       audit(dd, 'Invited user', 'user', `${input.name} (${input.role})`);
+      secAudit(dd, 'User account created (invite pending verification)', em, 'success', me);
       notify(dd, dd.users[dd.users.length - 1].id, 'System', 'Welcome to Cortexa', `You have been added to ${org?.name ?? 'the organisation'}.`, { name: 'dashboard' });
     });
     return { ok: true };
   }, [canUser, db, me, mutate, org]);
 
   const updateUser = useCallback((id: string, patch: Partial<User>) => {
+    if (!own(db, db.users, id)) { logDenied('user', id); return; }
     mutate((dd) => {
-      const u = dd.users.find((x) => x.id === id);
-      if (u) { Object.assign(u, patch); audit(dd, patch.active === false ? 'Deactivated user' : 'Updated user', 'user', u.name, u.id); }
+      const u = own(dd, dd.users, id);
+      if (!u) return;
+      /* privilege guard — role changes are an admin action even via direct call */
+      if (patch.role && patch.role !== u.role && !canUser('manageUsers')) {
+        secAudit(dd, 'Denied role change (insufficient permission)', `${u.email} → ${patch.role}`, 'denied', me);
+        return;
+      }
+      Object.assign(u, patch);
+      audit(dd, patch.active === false ? 'Deactivated user' : patch.role ? `Changed role to ${patch.role}` : 'Updated user', 'user', u.name, u.id);
+      if (patch.role) secAudit(dd, `Role changed to ${patch.role}`, `${u.email}`, 'success', me);
     });
-  }, [mutate]);
+  }, [db, mutate, canUser, me]);
 
   const updateOrg = useCallback((patch: Partial<Organisation>) => {
     if (!canUser('manageOrg')) { toast('Only administrators can change organisation settings.', 'error'); return; }
@@ -770,10 +1130,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const markNotificationRead = useCallback((id: string) => {
     mutate((dd) => {
-      const n = dd.notifications.find((x) => x.id === id);
+      const n = dd.notifications.find((x) => x.id === id && x.userId === me?.id);
       if (n) n.read = true;
     });
-  }, [mutate]);
+  }, [mutate, me]);
 
   const markAllNotificationsRead = useCallback(() => {
     mutate((dd) => {
@@ -781,63 +1141,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, [mutate, me]);
 
-  /* ── onboarding & reset ── */
-
-  const onboard = useCallback((data: Parameters<StoreCtx['onboard']>[0]) => {
-    if (db.orgs.some((o) => o.name.toLowerCase() === data.name.toLowerCase())) {
-      return { ok: false, error: 'An organisation with this name already exists.' };
-    }
-    mutate((dd) => {
-      const oid = uid('org');
-      dd.orgs.push({
-        id: oid, name: data.name, type: data.type, logoInitials: data.logoInitials || data.name.slice(0, 2).toUpperCase(),
-        address: data.address, email: data.email, phone: data.phone, refPrefix: data.refPrefix || 'ORG',
-        approvalChain: ['Department Head', 'Executive', 'Organisation Admin'],
-        notificationPrefs: [
-          { category: 'Meetings', inApp: true, email: true, browser: false },
-          { category: 'Tasks', inApp: true, email: true, browser: false },
-          { category: 'Approvals', inApp: true, email: true, browser: false },
-          { category: 'Correspondence', inApp: true, email: false, browser: false },
-          { category: 'Deadlines', inApp: true, email: true, browser: false },
-          { category: 'System', inApp: true, email: false, browser: false },
-        ],
-        createdAt: new Date().toISOString(),
-      });
-      const depIds: string[] = [];
-      data.departments.forEach((dep) => {
-        const did = uid('dep');
-        depIds.push(did);
-        dd.departments.push({ id: did, orgId: oid, name: dep.name, code: dep.code, description: '' });
-      });
-      const adminId = uid('u');
-      dd.users.push({
-        id: adminId, orgId: oid, name: data.adminName, email: data.adminEmail, title: data.adminTitle || 'Administrator',
-        role: 'Organisation Admin', departmentId: depIds[0], active: true,
-        initials: data.adminName.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase(),
-        color: '#146355', pwd: data.adminPwd,
-      });
-      data.inviteEmails.filter(Boolean).forEach((eml, i) => {
-        dd.users.push({
-          id: uid('u'), orgId: oid, name: eml.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-          email: eml, title: 'Staff', role: 'Staff', departmentId: depIds[i % Math.max(depIds.length, 1)],
-          active: true, initials: eml.slice(0, 2).toUpperCase(), color: '#3E5C76', pwd: 'cortexa',
-        });
-      });
-      dd.session.userId = adminId;
-      dd.audit.unshift({ id: uid('au'), orgId: oid, at: new Date().toISOString(), userId: adminId, userName: data.adminName, action: 'Organisation onboarded', recordType: 'organisation', target: data.name, result: 'success' });
-    });
-    setRoute({ name: 'dashboard' });
-    return { ok: true };
-  }, [db, mutate]);
+  /* ── reset ── */
 
   const resetDemo = useCallback(() => {
     localStorage.removeItem(LS_KEY);
     const fresh = buildSeed();
-    fresh.session.userId = db.session.userId && fresh.users.some((u) => u.id === db.session.userId) ? db.session.userId : null;
     setDb(fresh);
     setRoute({ name: 'dashboard' });
     toast('Demo data restored to its original state', 'info');
-  }, [db, toast]);
+  }, [toast]);
 
   /* ── search ── */
 
@@ -994,7 +1306,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const value: StoreCtx = {
     db, me, org, departments, users, route, nav,
-    login, loginAs, logout,
+    login, demoLogin, logout,
+    registerSignup, resendCode, verifyEmail, changeSignupEmail, demoMailFor,
+    completeSetup, changePassword, updateProfile,
+    mySessions, revokeSession, revokeOtherSessions, touchSession, securityLog, logEvent,
     toasts, toast, dismissToast,
     nextRef, canUser, searchAll, askAssistant,
     registerCorrespondence, updateCorrespondence, respondCorrespondence,
@@ -1006,7 +1321,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     addContact, updateContact, addDepartment, updateDepartment,
     addUser, updateUser, updateOrg, setNotificationPrefs,
     markNotificationRead, markAllNotificationsRead,
-    onboard, resetDemo,
+    resetDemo,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

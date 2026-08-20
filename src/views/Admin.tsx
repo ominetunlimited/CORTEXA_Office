@@ -57,9 +57,9 @@ function UsersTab() {
 
   const submit = () => {
     if (!f.name.trim() || !/\S+@\S+\.\S+/.test(f.email)) { toast('Name and a valid email are required.', 'error'); return; }
-    const r = addUser({ name: f.name.trim(), email: f.email.trim(), title: f.title.trim() || 'Staff', role: f.role, departmentId: f.departmentId || undefined, active: true, pwd: 'cortexa' });
+    const r = addUser({ name: f.name.trim(), email: f.email.trim(), title: f.title.trim() || 'Staff', role: f.role, departmentId: f.departmentId || undefined, active: true });
     if (!r.ok) { toast(r.error ?? 'Unable to add user.', 'error'); return; }
-    toast(`${f.name} invited — they sign in with password "cortexa"`);
+    toast(`${f.name} invited — email verification pending, temporary credential "cortexa"`);
     setAddOpen(false); setF({ name: '', email: '', title: '', role: 'Staff', departmentId: '' });
   };
 

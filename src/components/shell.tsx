@@ -8,8 +8,9 @@ import {
   IcGrid, IcInbox, IcStamp, IcEnvelope, IcSeal, IcFile, IcUsers, IcCheckSquare,
   IcCalendar, IcBook, IcColumns, IcChart, IcArchive, IcShield, IcBell, IcSearch,
   IcSpark, IcPlus, IcLogout, IcMenu, IcX, IcSend, CortexaSeal, IcChevD, IcMail,
-  IcPaperclip, IcEdit, IcRegistry, IcClock,
+  IcPaperclip, IcEdit, IcRegistry, IcClock, IcCheck,
 } from './icons';
+import { SESSION_IDLE_MS, SESSION_ABS_MS } from '../lib/security';
 
 const TITLES: Record<string, string> = {
   dashboard: 'Dashboard', 'desk-secretary': 'Secretary Desk', 'desk-executive': 'Executive Desk',
@@ -17,7 +18,7 @@ const TITLES: Record<string, string> = {
   documents: 'Records Vault', meetings: 'Meetings & Invitations', meeting: 'Meeting',
   tasks: 'Tasks & Actions', calendar: 'Institutional Calendar', contacts: 'Contact Directory',
   departments: 'Departments', reports: 'Reports & Analytics', archive: 'Institutional Archive',
-  admin: 'Administration', search: 'Registry Search',
+  admin: 'Administration', search: 'Registry Search', account: 'Profile & Security',
 };
 
 function useClock() {
@@ -47,7 +48,7 @@ function LiveRegister() {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { me, org, db, route, nav, logout, canUser, markNotificationRead, markAllNotificationsRead } = useStore();
+  const { me, org, db, route, nav, logout, canUser, markNotificationRead, markAllNotificationsRead, touchSession } = useStore();
   const [sideOpen, setSideOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [assistOpen, setAssistOpen] = useState(false);
@@ -55,6 +56,37 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [quickOpen, setQuickOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const now = useClock();
+
+  /* session lifecycle — activity keep-alive, idle + absolute expiry */
+  useEffect(() => {
+    const touch = () => touchSession();
+    window.addEventListener('pointerdown', touch);
+    window.addEventListener('keydown', touch);
+    const iv = window.setInterval(() => {
+      const sid = db.session.sessionId;
+      const s = sid ? db.sessions.find((x) => x.id === sid) : undefined;
+      if (!s) return;
+      if (Date.now() - s.lastSeen > SESSION_IDLE_MS) logout('Signed out after 30 minutes of inactivity.');
+      else if (Date.now() - s.createdAt > SESSION_ABS_MS) logout('Session expired after 12 hours. Please sign in again.');
+    }, 30000);
+    return () => {
+      window.removeEventListener('pointerdown', touch);
+      window.removeEventListener('keydown', touch);
+      window.clearInterval(iv);
+    };
+  }, [db.session.sessionId, db.sessions, touchSession, logout]);
+
+  /* Ctrl/Cmd+K focuses the global registry search */
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('cortexa:focus-search'));
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
 
   const myNotifs = useMemo(
     () => db.notifications.filter((n) => n.userId === me?.id).sort((a, b) => b.at.localeCompare(a.at)),
@@ -165,7 +197,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <p className="text-[12.5px] font-semibold text-paper truncate">{me?.name}</p>
               <p className="text-[10.5px] text-pine-300 truncate">{me?.title}</p>
             </div>
-            <button onClick={logout} className="text-pine-300 hover:text-clay-500 transition-colors cursor-pointer p-1" title="Sign out" aria-label="Sign out">
+            <button onClick={() => logout()} className="text-pine-300 hover:text-clay-500 transition-colors cursor-pointer p-1" title="Sign out" aria-label="Sign out">
               <IcLogout size={16} />
             </button>
           </div>
@@ -225,9 +257,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     <div className="px-4 py-3 border-b border-line-soft">
                       <p className="font-semibold text-[13.5px] text-ink">{me?.name}</p>
                       <p className="text-[11.5px] text-ink-faint">{me?.email}</p>
-                      <div className="mt-2">{me && <RoleBadge role={me.role} />}</div>
+                      <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                        {me && <RoleBadge role={me.role} />}
+                        <span className="chip bg-moss-100 text-moss-700"><IcCheck size={10} /> Verified</span>
+                      </div>
                     </div>
-                    <button className="w-full flex items-center gap-2 px-4 py-2.5 text-[13px] text-clay-600 hover:bg-clay-50 cursor-pointer" onClick={logout}>
+                    <button className="w-full flex items-center gap-2 px-4 py-2.5 text-[13px] text-ink-soft hover:bg-pine-50 hover:text-pine-700 cursor-pointer"
+                      onClick={() => { setUserOpen(false); nav({ name: 'account' }); }}>
+                      <IcShield size={15} /> Profile & security
+                    </button>
+                    <button className="w-full flex items-center gap-2 px-4 py-2.5 text-[13px] text-clay-600 hover:bg-clay-50 cursor-pointer" onClick={() => logout()}>
                       <IcLogout size={15} /> Sign out
                     </button>
                   </div>
@@ -259,6 +298,12 @@ export function GlobalSearch({ autoFocus, big }: { autoFocus?: boolean; big?: bo
   const { searchAll, nav } = useStore();
   const [q, setQ] = useState('');
   const [focus, setFocus] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const h = () => { inputRef.current?.focus(); inputRef.current?.select(); };
+    window.addEventListener('cortexa:focus-search', h);
+    return () => window.removeEventListener('cortexa:focus-search', h);
+  }, []);
   const res = useMemo(() => searchAll(q), [q, searchAll]);
   const total = res.correspondence.length + res.documents.length + res.matters.length + res.meetings.length + res.tasks.length + res.contacts.length;
   const showDrop = focus && q.trim().length >= 2;
@@ -277,8 +322,10 @@ export function GlobalSearch({ autoFocus, big }: { autoFocus?: boolean; big?: bo
     <div className={cx('relative', big ? 'w-full' : 'w-64 xl:w-80')}>
       <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint"><IcSearch size={15} /></span>
       <input
+        ref={inputRef}
         className={cx('input !pl-8', big && '!h-11 !text-[14px]')}
-        placeholder="Search the institutional register…"
+        placeholder="Search correspondence, documents, matters, people…"
+        aria-label="Search the institutional register"
         value={q}
         autoFocus={autoFocus}
         onChange={(e) => setQ(e.target.value)}
@@ -329,9 +376,20 @@ function NotificationsPanel({ open, onClose, items, onRead, onReadAll, nav }: {
   onRead: (id: string) => void; onReadAll: () => void; nav: (r: Route) => void;
 }) {
   const [cat, setCat] = useState<'All' | NotificationItem['category']>('All');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const cats = ['All', 'Meetings', 'Tasks', 'Approvals', 'Correspondence', 'Deadlines', 'System'] as const;
   const list = items.filter((n) => cat === 'All' || n.category === cat);
   const unread = items.filter((n) => !n.read).length;
+
+  /* group related notifications (same title) — show latest + "N updates" */
+  const groups = useMemo(() => {
+    const map = new Map<string, NotificationItem[]>();
+    list.forEach((n) => {
+      const key = n.title;
+      map.set(key, [...(map.get(key) ?? []), n]);
+    });
+    return Array.from(map.entries());
+  }, [list]);
   return (
     <Drawer open={open} onClose={onClose} title="Notification centre" subtitle={unread ? `${unread} unread notification${unread === 1 ? '' : 's'}` : 'You are all caught up'}
       footer={<button className="btn-ghost w-full" onClick={onReadAll} disabled={unread === 0}>Mark all as read</button>}>
@@ -347,20 +405,42 @@ function NotificationsPanel({ open, onClose, items, onRead, onReadAll, nav }: {
         <p className="text-[13px] text-ink-faint py-8 text-center">No {cat === 'All' ? '' : cat.toLowerCase() + ' '}notifications.</p>
       ) : (
         <div className="space-y-1.5">
-          {list.map((n) => (
-            <button key={n.id}
-              className={cx('w-full text-left rounded-md border px-3 py-2.5 transition-all cursor-pointer',
-                n.read ? 'bg-card border-line-soft opacity-75' : 'bg-pine-50/70 border-pine-200 hover:border-pine-400')}
-              onClick={() => { onRead(n.id); if (n.link) { nav(n.link); onClose(); } }}>
-              <div className="flex items-center gap-2">
-                {!n.read && <span className="dot bg-clay-500 pulse-urgent" />}
-                <span className={cx('chip', CAT_META[n.category])}>{n.category}</span>
-                <span className="ml-auto text-[10.5px] text-ink-faint font-mono">{relTime(n.at)}</span>
+          {groups.map(([title, ns]) => {
+            const isExpanded = expanded.has(title) || ns.length === 1;
+            const unreadInGroup = ns.filter((n) => !n.read).length;
+            return (
+              <div key={title} className="space-y-1.5">
+                {ns.length > 1 && !isExpanded && (
+                  <button className="w-full text-left rounded-md border border-brass-300/70 bg-brass-50 px-3 py-2.5 cursor-pointer hover:border-brass-500 transition-colors"
+                    onClick={() => setExpanded((s) => new Set(s).add(title))}>
+                    <div className="flex items-center gap-2">
+                      {unreadInGroup > 0 && <span className="dot bg-clay-500 pulse-urgent" />}
+                      <span className={cx('chip', CAT_META[ns[0].category])}>{ns[0].category}</span>
+                      <span className="chip bg-brass-100 text-brass-700">{ns.length} updates</span>
+                      <span className="ml-auto text-[10.5px] text-ink-faint font-mono">{relTime(ns[0].at)}</span>
+                    </div>
+                    <p className="text-[13px] font-semibold text-ink mt-1.5 leading-snug">{title}</p>
+                    <p className="text-[12px] text-brass-700 font-medium mt-0.5">Latest: {ns[0].body}</p>
+                  </button>
+                )}
+                {(isExpanded ? ns : []).map((n) => (
+                  <button key={n.id}
+                    className={cx('w-full text-left rounded-md border px-3 py-2.5 transition-all cursor-pointer',
+                      n.read ? 'bg-card border-line-soft opacity-75' : 'bg-pine-50/70 border-pine-200 hover:border-pine-400')}
+                    onClick={() => { onRead(n.id); if (n.link) { nav(n.link); onClose(); } }}>
+                    <div className="flex items-center gap-2">
+                      {!n.read && <span className="dot bg-clay-500 pulse-urgent" />}
+                      <span className={cx('chip', CAT_META[n.category])}>{n.category}</span>
+                      {ns.length > 1 && <span className="chip bg-line-soft text-ink-faint">×{ns.length}</span>}
+                      <span className="ml-auto text-[10.5px] text-ink-faint font-mono">{relTime(n.at)}</span>
+                    </div>
+                    <p className="text-[13px] font-semibold text-ink mt-1.5 leading-snug">{n.title}</p>
+                    <p className="text-[12px] text-ink-soft mt-0.5 leading-snug">{n.body}</p>
+                  </button>
+                ))}
               </div>
-              <p className="text-[13px] font-semibold text-ink mt-1.5 leading-snug">{n.title}</p>
-              <p className="text-[12px] text-ink-soft mt-0.5 leading-snug">{n.body}</p>
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </Drawer>

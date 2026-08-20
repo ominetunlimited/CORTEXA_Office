@@ -5,8 +5,12 @@ import type {
   TaskStatus, MeetingStatus, ResponseOption, DocCategory, MatterEvent,
 } from './types';
 import { d, dateOnly, pad, uid, initials } from './utils';
+import { hashSecret, deviceLabel } from './security';
 
-export const SEED_VERSION = 7;
+export const SEED_VERSION = 8;
+
+/* demo tenant credential — documented dev-only secret, hashed before storage */
+const DEMO_PWD_HASH = hashSecret('cortexa');
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 
@@ -16,6 +20,8 @@ function mkUser(i: number, orgId: string, name: string, email: string, title: st
   return {
     id: `u_${i}`, orgId, name, email, title, role, departmentId,
     active: true, initials: initials(name), color: AVATAR_COLORS[i % AVATAR_COLORS.length],
+    pwdHash: DEMO_PWD_HASH, emailVerified: true, country: 'NG',
+    pwdChangedAt: d(-90),
   };
 }
 
@@ -53,6 +59,8 @@ export function buildSeed(): DB {
       { category: 'Deadlines', inApp: true, email: true, browser: true },
       { category: 'System', inApp: true, email: false, browser: false },
     ],
+    country: 'NG',
+    setupComplete: true,
     createdAt: d(-240),
   };
 
@@ -1014,9 +1022,17 @@ export function buildSeed(): DB {
     { id: uid('cm'), orgId, targetType: 'matter', targetId: 'm_grant', userId: 'u_12', text: 'Audited statements attached from the records vault.', at: d(-3, 12) },
   ];
 
+  /* security domain — seeded login history gives the security page life */
+  const nowMs = Date.now();
+  audit.unshift(
+    { id: uid('au'), orgId, at: d(-1, 8, 45), userId: 'u_2', userName: 'Fatima Suleiman', action: 'User signed in', recordType: 'security', target: 'Chrome · Windows', result: 'success' },
+    { id: uid('au'), orgId, at: d(-1, 7, 12), userId: 'unknown', userName: 'Unknown', action: 'Failed sign-in attempt (wrong password)', recordType: 'security', target: 'staff@cortexafoundation.demo', result: 'denied' },
+    { id: uid('au'), orgId, at: d(-2, 17, 30), userId: 'u_1', userName: 'Adaeze Okafor', action: 'User signed in', recordType: 'security', target: 'Safari · macOS', result: 'success' },
+  );
+
   return {
     version: SEED_VERSION,
-    session: { userId: null },
+    session: { userId: null, sessionId: null },
     orgs: [org],
     users,
     departments: depts,
@@ -1032,5 +1048,12 @@ export function buildSeed(): DB {
     audit,
     comments,
     counters,
+    pendingSignups: [],
+    sessions: [
+      { id: 'sess_seed_1', userId: 'u_2', createdAt: nowMs - 2 * 86400000, lastSeen: nowMs - 3600000, device: 'Chrome · Windows', ip: '105.112.34.18' },
+      { id: 'sess_seed_2', userId: 'u_1', createdAt: nowMs - 86400000, lastSeen: nowMs - 7200000, device: 'Safari · macOS', ip: '105.112.34.18' },
+      { id: 'sess_seed_3', userId: 'u_3', createdAt: nowMs - 5 * 86400000, lastSeen: nowMs - 4 * 86400000, device: deviceLabel(), ip: '41.184.22.7' },
+    ],
+    security: { loginAttempts: {}, otp: {}, lastCodeEcho: {} },
   };
 }

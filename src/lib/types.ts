@@ -25,20 +25,15 @@ export type SecurityLevel = 'Public' | 'Internal' | 'Confidential' | 'Highly Con
 export const SECURITY_LEVELS: SecurityLevel[] = ['Public', 'Internal', 'Confidential', 'Highly Confidential'];
 
 export type OrgType =
-  | 'Government'
-  | 'University'
-  | 'Polytechnic'
-  | 'College'
-  | 'School'
-  | 'NGO'
-  | 'Private Company'
-  | 'Association'
-  | 'Hospital'
-  | 'Religious Organisation'
-  | 'Other';
+  | 'Government Ministry' | 'Government Department' | 'Government Agency' | 'Local Government'
+  | 'University' | 'Polytechnic' | 'College' | 'Primary School' | 'Secondary School'
+  | 'NGO' | 'Civil Society Organisation' | 'Private Company' | 'Professional Association'
+  | 'Hospital' | 'Religious Organisation' | 'Foundation' | 'Research Institution' | 'Other';
 export const ORG_TYPES: OrgType[] = [
-  'Government', 'University', 'Polytechnic', 'College', 'School', 'NGO',
-  'Private Company', 'Association', 'Hospital', 'Religious Organisation', 'Other',
+  'Government Ministry', 'Government Department', 'Government Agency', 'Local Government',
+  'University', 'Polytechnic', 'College', 'Primary School', 'Secondary School',
+  'NGO', 'Civil Society Organisation', 'Private Company', 'Professional Association',
+  'Hospital', 'Religious Organisation', 'Foundation', 'Research Institution', 'Other',
 ];
 
 export type CorrType =
@@ -102,9 +97,11 @@ export interface Organisation {
   address: string;
   email: string;
   phone: string;
+  country?: string;           // ISO2
   refPrefix: string;
   approvalChain: Role[];
   notificationPrefs: { category: string; inApp: boolean; email: boolean; browser: boolean }[];
+  setupComplete: boolean;     // onboarding wizard finished
   createdAt: string;
 }
 
@@ -119,7 +116,52 @@ export interface User {
   active: boolean;
   initials: string;
   color: string;
-  pwd?: string;
+  pwdHash?: string;           // salted digest — plaintext never stored
+  emailVerified: boolean;
+  phone?: string;
+  country?: string;           // ISO2
+  pwdChangedAt?: string;
+}
+
+/* ── security domain ─────────────────────────────────────────────────── */
+
+export interface PendingSignup {
+  id: string;
+  firstName: string;
+  lastName: string;
+  orgName: string;
+  orgType: OrgType;
+  country: string;            // ISO2
+  email: string;              // normalised
+  pwdHash: string;
+  termsAcceptedAt: string;
+  createdAt: string;
+}
+
+export interface SessionInfo {
+  id: string;
+  userId: string;
+  createdAt: number;
+  lastSeen: number;
+  device: string;
+  ip: string;
+}
+
+export interface OtpRecord {
+  hash: string;               // salted digest of the 6-digit code
+  email: string;              // normalised
+  expiresAt: number;
+  attempts: number;
+  resends: number;
+  lastSentAt: number;
+  purpose: 'signup' | 'reset';
+  signupId?: string;
+}
+
+export interface SecurityState {
+  loginAttempts: Record<string, { count: number; lockedUntil: number }>;
+  otp: Record<string, OtpRecord>;   // keyed by normalised email
+  lastCodeEcho: Record<string, string>; // demo mail-relay only (simulated SMTP outbox)
 }
 
 export interface Department {
@@ -199,7 +241,8 @@ export interface DocumentRecord {
   ownerId: string;
   security: SecurityLevel;
   status: 'Draft' | 'In Review' | 'Approved' | 'Circulated' | 'Archived';
-  fileName: string;
+  fileName: string;          // original name — metadata only, never a filesystem path
+  storageKey?: string;       // opaque object-storage key (signed URLs in production)
   sizeKb: number;
   mime: string;
   versions: DocVersion[];
@@ -360,7 +403,7 @@ export interface RefCounters {
 
 export interface DB {
   version: number;
-  session: { userId: string | null };
+  session: { userId: string | null; sessionId: string | null };
   orgs: Organisation[];
   users: User[];
   departments: Department[];
@@ -376,6 +419,10 @@ export interface DB {
   audit: AuditEntry[];
   comments: CommentItem[];
   counters: RefCounters;
+  /* security domain */
+  pendingSignups: PendingSignup[];
+  sessions: SessionInfo[];
+  security: SecurityState;
 }
 
 /* ── routing ──────────────────────────────────────────────────────────── */
@@ -384,7 +431,7 @@ export type RouteName =
   | 'dashboard' | 'desk-secretary' | 'desk-executive'
   | 'correspondence' | 'matters' | 'matter' | 'documents' | 'meetings' | 'meeting'
   | 'tasks' | 'calendar' | 'contacts' | 'departments' | 'reports' | 'archive'
-  | 'admin' | 'search';
+  | 'admin' | 'search' | 'account';
 
 export interface Route {
   name: RouteName;
