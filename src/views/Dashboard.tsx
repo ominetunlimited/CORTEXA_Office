@@ -10,6 +10,50 @@ const IcArrowLike = () => <span className="text-ink-faint"><IcChevR size={14} />
 import { cx, daysUntil, fmtTime12, relTime, dateOnly, fmtDate } from '../lib/utils';
 import { MEETING_STATUS_META, APPROVAL_META } from '../lib/types';
 
+/* six-week register heartbeat — animated draw-in sparkline */
+function RegistryPulse() {
+  const { db, me } = useStore();
+  const weeks = useMemo(() => {
+    const out: { in: number; out: number; label: string }[] = [];
+    const now = Date.now();
+    for (let w = 5; w >= 0; w--) {
+      const start = now - (w + 1) * 7 * 86400000;
+      const end = now - w * 7 * 86400000;
+      const inC = db.correspondence.filter((c) => c.orgId === me?.orgId && c.direction === 'incoming' && +new Date(c.dateReceived) >= start && +new Date(c.dateReceived) < end).length;
+      const outC = db.correspondence.filter((c) => c.orgId === me?.orgId && c.direction === 'outgoing' && +new Date(c.dateReceived) >= start && +new Date(c.dateReceived) < end).length;
+      const d0 = new Date(end);
+      out.push({ in: inC, out: outC, label: `${d0.getDate()}/${d0.getMonth() + 1}` });
+    }
+    return out;
+  }, [db, me]);
+
+  const W = 188, H = 40, PAD = 3;
+  const max = Math.max(1, ...weeks.map((w) => Math.max(w.in, w.out)));
+  const x = (i: number) => PAD + (i * (W - PAD * 2)) / 5;
+  const y = (v: number) => H - 6 - (v / max) * (H - 12);
+  const pts = (k: 'in' | 'out') => weeks.map((w, i) => `${x(i).toFixed(1)},${y(w[k]).toFixed(1)}`).join(' ');
+  const area = `${PAD},${H - 4} ${pts('in')} ${W - PAD},${H - 4}`;
+  const totIn = weeks.reduce((s, w) => s + w.in, 0);
+  const totOut = weeks.reduce((s, w) => s + w.out, 0);
+
+  return (
+    <div className="hidden sm:flex items-center gap-3.5" title="Correspondence registered per week, last six weeks">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="overflow-visible">
+        <polygon points={area} fill="var(--color-pine-600)" opacity="0.07" className="anim-fade" />
+        <polyline points={pts('in')} fill="none" stroke="var(--color-pine-600)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          pathLength={1} strokeDasharray="1" strokeDashoffset="1" className="chart-line" />
+        <polyline points={pts('out')} fill="none" stroke="var(--color-brass-500)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+          strokeDasharray="3 3" pathLength={1} className="chart-line" style={{ animationDelay: '0.15s' }} />
+        <circle cx={x(5)} cy={y(weeks[5].in)} r="3" fill="var(--color-pine-600)" className="live-dot" />
+      </svg>
+      <div className="text-[10px] leading-[1.5] text-ink-faint whitespace-nowrap">
+        <p><span className="dot bg-pine-600 mr-1.5" />{totIn} in · 6w</p>
+        <p><span className="dot bg-brass-500 mr-1.5" />{totOut} out · 6w</p>
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const { me, org, db, users, nav, canUser } = useStore();
   const [qa, setQa] = useState<QAKey>(null);
@@ -73,9 +117,9 @@ export function Dashboard() {
       {/* executive summary strip */}
       <Reveal>
         <div className="card p-4 mb-5">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between gap-4 mb-3 flex-wrap">
             <p className="text-[10.5px] font-bold uppercase tracking-[0.16em] text-ink-faint">Executive summary</p>
-            <span className="ref text-ink-faint">live register counts</span>
+            <RegistryPulse />
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 stagger">
             <Stat label="Correspondence" value={data.corr.length} tone="pine" sub={`${data.pending.length} open`} onClick={() => nav({ name: 'correspondence' })} />

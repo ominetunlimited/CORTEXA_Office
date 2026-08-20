@@ -29,7 +29,7 @@ export function Login() {
     <div className="min-h-screen flex ledger-bg">
       {/* brand panel */}
       <div className="hidden lg:flex flex-col w-[46%] xl:w-[42%] bg-pine-900 sidebar-texture text-pine-100 p-10 xl:p-14 relative overflow-hidden">
-        <div className="absolute -right-24 -bottom-24 text-pine-800 opacity-60"><CortexaSeal size={420} /></div>
+        <div className="absolute -right-24 -bottom-24 text-pine-800 opacity-60"><span className="block seal-spin"><CortexaSeal size={420} /></span></div>
         <div className="flex items-center gap-3 relative">
           <span className="text-brass-400"><CortexaSeal size={44} /></span>
           <div>

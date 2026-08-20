@@ -29,6 +29,23 @@ function useClock() {
   return now;
 }
 
+/* live tally of the active institutional register */
+function LiveRegister() {
+  const { db, me } = useStore();
+  const oid = me?.orgId;
+  const count = db.correspondence.filter((r) => r.orgId === oid && !r.archived).length
+    + db.documents.filter((r) => r.orgId === oid && !r.archived).length
+    + db.matters.filter((r) => r.orgId === oid && !r.archived).length
+    + db.meetings.filter((r) => r.orgId === oid && !r.archived).length
+    + db.tasks.filter((r) => r.orgId === oid && !r.archived).length;
+  return (
+    <span className="hidden xl:flex items-center gap-2 text-[11px] font-mono text-ink-faint" title="Active records across correspondence, documents, matters, meetings and tasks">
+      <span className="dot bg-pine-500 live-dot" />
+      register live · {count} records
+    </span>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const { me, org, db, route, nav, logout, canUser, markNotificationRead, markAllNotificationsRead } = useStore();
   const [sideOpen, setSideOpen] = useState(false);
@@ -166,6 +183,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <h2 className="font-display font-bold text-[14.5px] text-ink leading-tight truncate">{TITLES[route.name] ?? 'Cortexa'}</h2>
             </div>
             <div className="flex-1" />
+            <LiveRegister />
             <span className="hidden md:flex items-center gap-1.5 text-[11.5px] font-mono text-ink-faint"><IcClock size={13} />{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <div className="hidden md:block"><GlobalSearch /></div>
             <button onClick={() => setAssistOpen(true)} className="btn-ghost !px-2.5 relative" title="Cortexa Assistant — ask the register anything">

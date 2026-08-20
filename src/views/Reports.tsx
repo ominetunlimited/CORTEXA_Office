@@ -6,7 +6,7 @@ import { IcDownload, IcChart } from '../components/icons';
 import { TASK_STATUSES } from '../lib/types';
 
 export function Reports() {
-  const { db, me, users, departments, toast } = useStore();
+  const { db, me, users, departments, toast, nav } = useStore();
 
   const data = useMemo(() => {
     const corr = db.correspondence.filter((c) => c.orgId === me?.orgId && !c.archived && canSee(me, c.security));
@@ -93,7 +93,7 @@ export function Reports() {
               <thead><tr><th className="th !px-1">Officer</th><th className="th">Open</th><th className="th">Overdue</th><th className="th">Approvals</th><th className="th">Meetings</th></tr></thead>
               <tbody>
                 {data.workload.map((w) => (
-                  <tr key={w.user.id}>
+                  <tr key={w.user.id} className="tr-hover">
                     <td className="td !px-1">
                       <span className="flex items-center gap-2"><Avatar name={w.user.name} color={w.user.color} size={22} />
                         <span className="min-w-0"><span className="block text-[12.5px] font-medium text-ink leading-tight truncate">{w.user.name}</span>
@@ -124,7 +124,7 @@ export function Reports() {
                 {rows.map((c) => {
                   const late = c.responseDeadline && daysUntil(c.responseDeadline) < 0;
                   return (
-                    <tr key={c.id}>
+                    <tr key={c.id} className="tr-hover cursor-pointer" onClick={() => nav({ name: 'correspondence', id: c.id })}>
                       <td className="td ref text-pine-700 whitespace-nowrap">{c.ref}</td>
                       <td className="td text-ink min-w-[200px]">{c.subject}</td>
                       <td className="td text-ink-soft whitespace-nowrap">{c.senderOrg ?? c.recipientOrg ?? '—'}</td>
