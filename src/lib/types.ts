@@ -89,19 +89,39 @@ export type ApprovalState = 'Pending' | 'Approved' | 'Rejected' | 'Changes Reque
 
 /* ── entities ─────────────────────────────────────────────────────────── */
 
+/* ── feature flags & module visibility ─────────────────────────────── */
+export type FlagKey =
+  | 'finance' | 'assets' | 'announcements' | 'deadlines' | 'ai'
+  | 'hr' | 'procurement' | 'projects' | 'board';
+export type FeatureFlags = Record<FlagKey, boolean>;
+export const ALL_FLAGS: FlagKey[] = ['finance', 'assets', 'announcements', 'deadlines', 'ai', 'hr', 'procurement', 'projects', 'board'];
+
+export interface OrgBrand {
+  primary: string;            // css colour applied to workspace accents
+  secondary: string;
+}
+
 export interface Organisation {
   id: string;
   name: string;
   type: OrgType;
   logoInitials: string;
+  logoUrl?: string;           // uploaded logo data-url
   address: string;
   email: string;
   phone: string;
+  website?: string;
   country?: string;           // ISO2
   refPrefix: string;
   approvalChain: Role[];
   notificationPrefs: { category: string; inApp: boolean; email: boolean; browser: boolean }[];
   setupComplete: boolean;     // onboarding wizard finished
+  currency: { code: string; symbol: string };
+  brand: OrgBrand;
+  flags: FeatureFlags;
+  aiSeats: number;            // subscription-configurable AI capacity
+  pettyCashOpening: number;
+  budgetAlertPct: number[];   // e.g. [70,80,90,100]
   createdAt: string;
 }
 
@@ -116,11 +136,115 @@ export interface User {
   active: boolean;
   initials: string;
   color: string;
+  photo?: string;             // avatar data-url (JPG/PNG/WEBP)
   pwdHash?: string;           // salted digest — plaintext never stored
   emailVerified: boolean;
   phone?: string;
   country?: string;           // ISO2
   pwdChangedAt?: string;
+  aiEnabled: boolean;         // per-seat AI access (max org.aiSeats)
+}
+
+/* ── finance domain ────────────────────────────────────────────────── */
+export type FinKind = 'income' | 'expenditure';
+export type ExpStatus = 'Draft' | 'Submitted' | 'Pending Approval' | 'Approved' | 'Rejected' | 'Paid' | 'Cancelled';
+export const EXP_STATUSES: ExpStatus[] = ['Draft', 'Submitted', 'Pending Approval', 'Approved', 'Rejected', 'Paid', 'Cancelled'];
+
+export interface FinanceTxn {
+  id: string;
+  orgId: string;
+  ref: string;
+  kind: FinKind;
+  date: string;               // ISO date (yyyy-mm-dd)
+  party: string;              // income source / payee
+  description: string;
+  amount: number;
+  currency: string;
+  departmentId?: string;
+  category: string;
+  budgetId?: string;
+  paymentMethod?: string;
+  status: ExpStatus;          // income uses Draft/Approved/Paid; expenditure full workflow
+  requestedById?: string;
+  approvedById?: string;
+  paidById?: string;
+  receiptDocId?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface BudgetLine {
+  id: string;
+  orgId: string;
+  year: number;
+  departmentId?: string;
+  category: string;
+  allocated: number;
+}
+
+export interface Vendor {
+  id: string;
+  orgId: string;
+  name: string;
+  contactPerson?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  category: string;
+  status: 'Active' | 'Inactive';
+  notes?: string;
+  createdAt: string;
+}
+
+export type InvoiceStatus = 'Received' | 'Under Review' | 'Approved' | 'Partially Paid' | 'Paid' | 'Disputed' | 'Cancelled';
+export const INVOICE_STATUSES: InvoiceStatus[] = ['Received', 'Under Review', 'Approved', 'Partially Paid', 'Paid', 'Disputed', 'Cancelled'];
+
+export interface Invoice {
+  id: string;
+  orgId: string;
+  ref: string;
+  vendorId?: string;
+  date: string;
+  dueDate?: string;
+  amount: number;
+  currency: string;
+  status: InvoiceStatus;
+  expenseId?: string;
+  receiptDocId?: string;
+  createdAt: string;
+}
+
+/* ── announcements, assets ─────────────────────────────────────────── */
+export interface Announcement {
+  id: string;
+  orgId: string;
+  title: string;
+  body: string;
+  priority: 'Routine' | 'Important' | 'Urgent';
+  targetDepartmentId?: string;
+  expiresAt?: string;         // ISO date
+  createdBy: string;
+  createdAt: string;
+}
+
+export type AssetStatus = 'Available' | 'Assigned' | 'Under Repair' | 'Lost' | 'Retired' | 'Disposed';
+export const ASSET_STATUSES: AssetStatus[] = ['Available', 'Assigned', 'Under Repair', 'Lost', 'Retired', 'Disposed'];
+
+export interface Asset {
+  id: string;
+  orgId: string;
+  assetCode: string;          // e.g. ICT/LAP/2026/024
+  name: string;
+  category: string;
+  serial?: string;
+  purchaseDate?: string;
+  cost?: number;
+  condition?: string;
+  assignedToId?: string;
+  departmentId?: string;
+  location?: string;
+  status: AssetStatus;
+  createdAt: string;
 }
 
 /* ── security domain ─────────────────────────────────────────────────── */
@@ -423,6 +547,13 @@ export interface DB {
   pendingSignups: PendingSignup[];
   sessions: SessionInfo[];
   security: SecurityState;
+  /* finance & operations domain */
+  finance: FinanceTxn[];
+  budgets: BudgetLine[];
+  vendors: Vendor[];
+  invoices: Invoice[];
+  announcements: Announcement[];
+  assets: Asset[];
 }
 
 /* ── routing ──────────────────────────────────────────────────────────── */
@@ -431,7 +562,8 @@ export type RouteName =
   | 'dashboard' | 'desk-secretary' | 'desk-executive'
   | 'correspondence' | 'matters' | 'matter' | 'documents' | 'meetings' | 'meeting'
   | 'tasks' | 'calendar' | 'contacts' | 'departments' | 'reports' | 'archive'
-  | 'admin' | 'search' | 'account';
+  | 'admin' | 'search' | 'account'
+  | 'finance' | 'assets' | 'announcements' | 'deadlines';
 
 export interface Route {
   name: RouteName;

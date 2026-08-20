@@ -15,6 +15,8 @@ import { Reports } from './views/Reports';
 import { ArchiveView } from './views/ArchiveView';
 import { Admin } from './views/Admin';
 import { SecretaryDesk, ExecutiveDesk } from './views/Desk';
+import { FinanceView } from './views/Finance';
+import { DeadlinesView, AnnouncementsView, AssetsView } from './views/Operations';
 import { EmptyState, Chip } from './components/ui';
 import { IcSearch, IcEnvelope, IcFile, IcSeal, IcUsers, IcCheckSquare, IcBook } from './components/icons';
 import type { Route } from './lib/types';
@@ -104,6 +106,10 @@ function Router() {
     case 'archive': view = <ArchiveView />; break;
     case 'admin': view = <Admin />; break;
     case 'search': view = <SearchView />; break;
+    case 'finance': view = <FinanceView />; break;
+    case 'deadlines': view = <DeadlinesView />; break;
+    case 'announcements': view = <AnnouncementsView />; break;
+    case 'assets': view = <AssetsView />; break;
     default: view = <Dashboard />;
   }
 

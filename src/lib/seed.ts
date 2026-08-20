@@ -7,7 +7,7 @@ import type {
 import { d, dateOnly, pad, uid, initials } from './utils';
 import { hashSecret, deviceLabel } from './security';
 
-export const SEED_VERSION = 8;
+export const SEED_VERSION = 9;
 
 /* demo tenant credential — documented dev-only secret, hashed before storage */
 const DEMO_PWD_HASH = hashSecret('cortexa');
@@ -22,6 +22,8 @@ function mkUser(i: number, orgId: string, name: string, email: string, title: st
     active: true, initials: initials(name), color: AVATAR_COLORS[i % AVATAR_COLORS.length],
     pwdHash: DEMO_PWD_HASH, emailVerified: true, country: 'NG',
     pwdChangedAt: d(-90),
+    /* AI seats: executives, admins, secretaries & records officers get AI access in the demo */
+    aiEnabled: ['Organisation Admin', 'Super Admin', 'Executive', 'Secretary', 'Records Officer', 'Department Head'].includes(role),
   };
 }
 
@@ -60,7 +62,14 @@ export function buildSeed(): DB {
       { category: 'System', inApp: true, email: false, browser: false },
     ],
     country: 'NG',
+    website: 'https://cortexafoundation.demo',
     setupComplete: true,
+    currency: { code: 'NGN', symbol: '₦' },
+    brand: { primary: '#146355', secondary: '#9C6B1E' },
+    flags: { finance: true, assets: true, announcements: true, deadlines: true, ai: true, hr: false, procurement: true, projects: false, board: false },
+    aiSeats: 100,
+    pettyCashOpening: 150000,
+    budgetAlertPct: [70, 80, 90, 100],
     createdAt: d(-240),
   };
 
@@ -1055,5 +1064,102 @@ export function buildSeed(): DB {
       { id: 'sess_seed_3', userId: 'u_3', createdAt: nowMs - 5 * 86400000, lastSeen: nowMs - 4 * 86400000, device: deviceLabel(), ip: '41.184.22.7' },
     ],
     security: { loginAttempts: {}, otp: {}, lastCodeEcho: {} },
+
+    /* ── finance & operations domain ── */
+    budgets: mkBudgets(orgId),
+    finance: mkFinance(orgId),
+    vendors: mkVendors(orgId),
+    invoices: mkInvoices(orgId),
+    announcements: mkAnnouncements(orgId),
+    assets: mkAssets(orgId),
   };
+}
+
+/* ── finance seed builders ───────────────────────────────────────────── */
+const YEAR = new Date().getFullYear();
+
+function mkBudgets(orgId: string): DB['budgets'] {
+  const B = (id: string, departmentId: string | undefined, category: string, allocated: number): DB['budgets'][0] =>
+    ({ id, orgId, year: YEAR, departmentId, category, allocated });
+  return [
+    B('bdg_1', 'dep_adm', 'Administration', 4500000),
+    B('bdg_2', 'dep_prg', 'Programme Delivery', 12000000),
+    B('bdg_3', 'dep_fin', 'Finance & Audit', 2500000),
+    B('bdg_4', 'dep_com', 'Communications', 3000000),
+    B('bdg_5', 'dep_hrs', 'Human Resources', 5000000),
+    B('bdg_6', undefined, 'Travel & Logistics', 1800000),
+    B('bdg_7', undefined, 'Equipment & ICT', 3200000),
+  ];
+}
+
+function mkFinance(orgId: string): DB['finance'] {
+  const yr = YEAR;
+  const T = (id: string, kind: 'income' | 'expenditure', date: string, party: string, description: string, amount: number,
+    category: string, status: DB['finance'][0]['status'], departmentId?: string, budgetId?: string, extra?: Partial<DB['finance'][0]>): DB['finance'][0] => ({
+    id, orgId, ref: `${kind === 'income' ? 'INC' : 'EXP'}/${yr}/${id.split('_')[1]}`, kind, date, party, description, amount,
+    currency: 'NGN', departmentId, category, budgetId, status, createdAt: d(-30), ...extra,
+  });
+  return [
+    T('fin_1', 'income', dateOnly(-75), 'Ford Foundation', 'Programme grant — housing policy engagement', 25000000, 'Grant', 'Paid', 'dep_prg', 'bdg_2', { approvedById: 'u_1', paidById: 'u_6' }),
+    T('fin_2', 'income', dateOnly(-40), 'Membership Dues', 'Annual membership renewal (12 members)', 1200000, 'Membership', 'Paid', 'dep_fin', 'bdg_3', { approvedById: 'u_6', paidById: 'u_6' }),
+    T('fin_3', 'income', dateOnly(-12), 'Training Services', 'Records management workshop fees', 850000, 'Service income', 'Approved', 'dep_prg', undefined, { approvedById: 'u_6' }),
+    T('fin_4', 'income', dateOnly(-3), 'UN Habitat Nigeria', 'Co-funding for national housing dialogue', 5000000, 'Project funding', 'Pending Approval', 'dep_prg', 'bdg_2', { requestedById: 'u_10' }),
+
+    T('fin_5', 'expenditure', dateOnly(-60), 'Meridian Supplies Ltd', 'Office stationery & toner — Q1', 480000, 'Office Supplies', 'Paid', 'dep_adm', 'bdg_1', { approvedById: 'u_1', paidById: 'u_6', requestedById: 'u_15' }),
+    T('fin_6', 'expenditure', dateOnly(-45), 'Printcraft Vendors', 'Annual report design & printing', 1450000, 'Communications', 'Paid', 'dep_com', 'bdg_4', { approvedById: 'u_1', paidById: 'u_6', requestedById: 'u_13' }),
+    T('fin_7', 'expenditure', dateOnly(-25), 'Transcorp Hilton', 'National housing stakeholder meeting venue', 2200000, 'Events & Venues', 'Approved', 'dep_prg', 'bdg_2', { approvedById: 'u_1', requestedById: 'u_5' }),
+    T('fin_8', 'expenditure', dateOnly(-18), 'Gwagwalada Logistics', 'Mobile clinic outreach transport', 620000, 'Travel & Logistics', 'Paid', 'dep_prg', 'bdg_6', { approvedById: 'u_3', paidById: 'u_6', requestedById: 'u_10' }),
+    T('fin_9', 'expenditure', dateOnly(-10), 'TechHub Nigeria', 'Laptop procurement (2 units)', 1800000, 'Equipment & ICT', 'Pending Approval', 'dep_adm', 'bdg_7', { requestedById: 'u_18' }),
+    T('fin_10', 'expenditure', dateOnly(-6), 'Staff Welfare', 'Team capacity-building workshop', 350000, 'Training', 'Submitted', 'dep_hrs', 'bdg_5', { requestedById: 'u_14' }),
+    T('fin_11', 'expenditure', dateOnly(-2), 'Petty Cash Reimbursement', 'Courier & dispatch expenses', 85000, 'Office Supplies', 'Approved', 'dep_adm', 'bdg_1', { approvedById: 'u_2', requestedById: 'u_2' }),
+  ];
+}
+
+function mkVendors(orgId: string): DB['vendors'] {
+  const V = (id: string, name: string, category: string, contactPerson: string, email: string, phone: string, status: 'Active' | 'Inactive' = 'Active', notes?: string): DB['vendors'][0] =>
+    ({ id, orgId, name, category, contactPerson, email, phone, address: 'Abuja, Nigeria', status, notes, createdAt: d(-120) });
+  return [
+    V('vnd_1', 'Meridian Supplies Ltd', 'Office Supplies', 'Chinedu Eze', 'sales@meridiansupplies.demo', '+234 803 555 0101', 'Active', 'Preferred stationery vendor — 5% bulk discount.'),
+    V('vnd_2', 'Printcraft Vendors', 'Printing & Design', 'Amina Yusuf', 'hello@printcraft.demo', '+234 805 555 0102', 'Active', 'Handles annual report and branded collateral.'),
+    V('vnd_3', 'TechHub Nigeria', 'ICT Equipment', 'Tunde Bakare', 'b2b@techhub.demo', '+234 809 555 0103', 'Active', 'Warranty partner for laptops and peripherals.'),
+    V('vnd_4', 'Transcorp Hilton', 'Events & Venues', 'Events Desk', 'events@transcorphilton.demo', '+234 700 555 0104', 'Active', 'Conference facilities for stakeholder meetings.'),
+    V('vnd_5', 'Gwagwalada Logistics', 'Transport & Logistics', 'Musa Ibrahim', 'ops@gwaglogistics.demo', '+234 806 555 0105', 'Active', 'Field transport for programme outreach.'),
+    V('vnd_6', 'Lexis Counsel LLP', 'Legal Services', 'Barr. Ngozi Umeh', 'chambers@lexiscounsel.demo', '+234 802 555 0106', 'Inactive', 'Engaged on retainer for contract review (2025).'),
+  ];
+}
+
+function mkInvoices(orgId: string): DB['invoices'] {
+  const yr = YEAR;
+  const I = (id: string, ref: string, vendorId: string, date: string, dueDate: string, amount: number, status: DB['invoices'][0]['status'], expenseId?: string): DB['invoices'][0] =>
+    ({ id, orgId, ref, vendorId, date, dueDate, amount, currency: 'NGN', status, expenseId, createdAt: d(-20) });
+  return [
+    I('inv_1', `INV/${yr}/001`, 'vnd_1', dateOnly(-58), dateOnly(-28), 480000, 'Paid', 'fin_5'),
+    I('inv_2', `INV/${yr}/002`, 'vnd_2', dateOnly(-44), dateOnly(-14), 1450000, 'Paid', 'fin_6'),
+    I('inv_3', `INV/${yr}/003`, 'vnd_4', dateOnly(-24), dateOnly(6), 2200000, 'Approved', 'fin_7'),
+    I('inv_4', `INV/${yr}/004`, 'vnd_3', dateOnly(-9), dateOnly(21), 1800000, 'Under Review', 'fin_9'),
+    I('inv_5', `INV/${yr}/005`, 'vnd_5', dateOnly(-16), dateOnly(14), 620000, 'Disputed'),
+  ];
+}
+
+function mkAnnouncements(orgId: string): DB['announcements'] {
+  return [
+    { id: 'ann_1', orgId, title: 'National Housing Stakeholders Meeting', body: 'All programme staff are invited to the stakeholder engagement at Transcorp Hilton. Please confirm attendance with the secretariat.', priority: 'Important', createdBy: 'u_1', createdAt: d(-5) },
+    { id: 'ann_2', orgId, title: 'Quarterly Budget Review', body: 'Department heads should submit Q2 budget utilisation reports to Finance by the end of the week.', priority: 'Urgent', targetDepartmentId: 'dep_fin', createdBy: 'u_6', createdAt: d(-2), expiresAt: dateOnly(5) },
+    { id: 'ann_3', orgId, title: 'Records Digitisation Drive', body: 'The records vault migration continues this month. Prioritise scanning of 2024 correspondence for the archive.', priority: 'Routine', createdBy: 'u_4', createdAt: d(-8), expiresAt: dateOnly(20) },
+  ];
+}
+
+function mkAssets(orgId: string): DB['assets'] {
+  const A = (id: string, assetCode: string, name: string, category: string, status: DB['assets'][0]['status'], cost: number, departmentId?: string, assignedToId?: string, location?: string): DB['assets'][0] =>
+    ({ id, orgId, assetCode, name, category, status, cost, departmentId, assignedToId, location, serial: `SN-${id.split('_')[1].toUpperCase()}${Math.floor(1000 + Math.random() * 9000)}`, purchaseDate: dateOnly(-200), condition: 'Good', createdAt: d(-200) });
+  return [
+    A('ast_1', 'ICT/LAP/2026/001', 'Dell Latitude 7440', 'Computer', 'Assigned', 1150000, 'dep_adm', 'u_2', 'Admin Office'),
+    A('ast_2', 'ICT/LAP/2026/002', 'HP EliteBook 840', 'Computer', 'Assigned', 980000, 'dep_prg', 'u_10', 'Programmes Room'),
+    A('ast_3', 'ICT/PRJ/2026/001', 'Epson EB-X51 Projector', 'Presentation', 'Available', 420000, 'dep_com', undefined, 'Store Room B'),
+    A('ast_4', 'ICT/CAM/2026/001', 'Canon EOS R50 Camera', 'Camera', 'Assigned', 890000, 'dep_com', 'u_13', 'Communications Studio'),
+    A('ast_5', 'FUR/DSK/2026/010', 'Executive Desk Set', 'Furniture', 'Available', 350000, 'dep_adm', undefined, 'Store Room A'),
+    A('ast_6', 'VEH/CAR/2026/001', 'Toyota Hilux (ABJ-234-CF)', 'Vehicle', 'Assigned', 28500000, 'dep_adm', 'u_15', 'Motor Pool'),
+    A('ast_7', 'ICT/PRT/2026/002', 'HP LaserJet Pro MFP', 'Printer', 'Under Repair', 310000, 'dep_fin', undefined, 'Finance Office'),
+    A('ast_8', 'ICT/PHN/2026/003', 'Samsung Galaxy A54', 'Phone', 'Retired', 285000, 'dep_hrs', undefined, 'Store Room A'),
+  ];
 }

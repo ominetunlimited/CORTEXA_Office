@@ -19,6 +19,8 @@ const TITLES: Record<string, string> = {
   tasks: 'Tasks & Actions', calendar: 'Institutional Calendar', contacts: 'Contact Directory',
   departments: 'Departments', reports: 'Reports & Analytics', archive: 'Institutional Archive',
   admin: 'Administration', search: 'Registry Search', account: 'Profile & Security',
+  finance: 'Finance & Bookkeeping', deadlines: 'Deadline Centre',
+  announcements: 'Announcements', assets: 'Asset Register',
 };
 
 function useClock() {
@@ -48,7 +50,7 @@ function LiveRegister() {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { me, org, db, route, nav, logout, canUser, markNotificationRead, markAllNotificationsRead, touchSession } = useStore();
+  const { me, org, db, route, nav, logout, canUser, markNotificationRead, markAllNotificationsRead, touchSession, flag, myAI } = useStore();
   const [sideOpen, setSideOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [assistOpen, setAssistOpen] = useState(false);
@@ -101,7 +103,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   const navTo = (r: Route) => { nav(r); setSideOpen(false); };
 
-  const NAV: { section: string; items: { name: Route['name']; label: string; icon: (p: { size?: number }) => React.ReactElement; badge?: number; badgeTone?: string }[] }[] = [
+  type NavItem = { name: Route['name']; label: string; icon: (p: { size?: number }) => React.ReactElement; badge?: number; badgeTone?: string };
+  const ops: NavItem[] = [];
+  if (flag('finance')) ops.push({ name: 'finance', label: 'Finance', icon: IcChart });
+  if (flag('deadlines')) ops.push({ name: 'deadlines', label: 'Deadline Centre', icon: IcClock });
+  if (flag('announcements')) ops.push({ name: 'announcements', label: 'Announcements', icon: IcBell });
+  if (flag('assets')) ops.push({ name: 'assets', label: 'Assets', icon: IcColumns });
+
+  const NAV: { section: string; items: NavItem[] }[] = [
     {
       section: 'Workspace',
       items: [
@@ -121,6 +130,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         { name: 'calendar', label: 'Calendar', icon: IcCalendar },
       ],
     },
+    ...(ops.length ? [{ section: 'Operations', items: ops }] : []),
     {
       section: 'Institution',
       items: [

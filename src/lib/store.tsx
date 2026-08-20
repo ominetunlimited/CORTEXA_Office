@@ -4,9 +4,10 @@ import type {
   Meeting, TaskItem, ApprovalRecord, Contact, NotificationItem, AuditEntry, CommentItem,
   EmailRecord, Role, SecurityLevel, CorrStatus, TaskStatus, ResponseOption, DocCategory,
   Priority, MatterEvent, ApprovalState, SessionInfo, PendingSignup, OrgType,
+  FinanceTxn, BudgetLine, Vendor, Invoice, Announcement, Asset, FeatureFlags, OrgBrand, FlagKey,
 } from './types';
 import { buildSeed, SEED_VERSION } from './seed';
-import { uid, daysUntil, pad, d } from './utils';
+import { uid, daysUntil, pad, d, dateOnly } from './utils';
 import {
   hashSecret, verifySecret, checkPassword, isValidEmail, normalizeEmail,
   generateOtp, otpExpiresAt, OTP_RULES, lockoutAfterFailures, deviceLabel,
@@ -19,15 +20,16 @@ const LS_KEY = `cortexa.db.v${SEED_VERSION}`;
 
 export type Capability =
   | 'register' | 'create' | 'assign' | 'approve' | 'archive'
-  | 'manageUsers' | 'manageOrg' | 'viewAudit' | 'manageDept' | 'respond';
+  | 'manageUsers' | 'manageOrg' | 'viewAudit' | 'manageDept' | 'respond'
+  | 'finance' | 'announce';
 
 const CAPS: Record<Role, Capability[]> = {
-  'Super Admin': ['register', 'create', 'assign', 'approve', 'archive', 'manageUsers', 'manageOrg', 'viewAudit', 'manageDept', 'respond'],
-  'Organisation Admin': ['register', 'create', 'assign', 'approve', 'archive', 'manageUsers', 'manageOrg', 'viewAudit', 'manageDept', 'respond'],
-  Executive: ['register', 'create', 'assign', 'approve', 'archive', 'respond'],
+  'Super Admin': ['register', 'create', 'assign', 'approve', 'archive', 'manageUsers', 'manageOrg', 'viewAudit', 'manageDept', 'respond', 'finance', 'announce'],
+  'Organisation Admin': ['register', 'create', 'assign', 'approve', 'archive', 'manageUsers', 'manageOrg', 'viewAudit', 'manageDept', 'respond', 'finance', 'announce'],
+  Executive: ['register', 'create', 'assign', 'approve', 'archive', 'respond', 'finance', 'announce'],
   Secretary: ['register', 'create', 'assign', 'respond'],
   'Records Officer': ['register', 'create', 'archive', 'respond'],
-  'Department Head': ['register', 'create', 'assign', 'approve', 'respond'],
+  'Department Head': ['register', 'create', 'assign', 'approve', 'respond', 'finance'],
   Staff: ['create', 'respond'],
   Viewer: [],
 };
@@ -125,13 +127,35 @@ interface StoreCtx {
   updateContact: (id: string, patch: Partial<Contact>) => void;
   addDepartment: (input: Omit<Department, 'id' | 'orgId'>) => { ok: boolean; error?: string };
   updateDepartment: (id: string, patch: Partial<Department>) => void;
-  addUser: (input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt'>) => { ok: boolean; error?: string };
+  addUser: (input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt' | 'aiEnabled' | 'photo'>) => { ok: boolean; error?: string };
   updateUser: (id: string, patch: Partial<User>) => void;
   updateOrg: (patch: Partial<Organisation>) => void;
   setNotificationPrefs: (prefs: Organisation['notificationPrefs']) => void;
   markNotificationRead: (id: string) => void;
   markAllNotificationsRead: () => void;
   resetDemo: () => void;
+  /* finance & operations */
+  addFinanceTxn: (input: Partial<FinanceTxn> & Pick<FinanceTxn, 'kind' | 'party' | 'description' | 'amount' | 'category'>) => FinanceTxn | null;
+  setFinanceStatus: (id: string, status: FinanceTxn['status']) => void;
+  addBudgetLine: (input: Omit<BudgetLine, 'id' | 'orgId'>) => void;
+  addVendor: (input: Omit<Vendor, 'id' | 'orgId' | 'createdAt'>) => void;
+  updateVendor: (id: string, patch: Partial<Vendor>) => void;
+  addInvoice: (input: Omit<Invoice, 'id' | 'orgId' | 'ref' | 'createdAt'>) => Invoice | null;
+  setInvoiceStatus: (id: string, status: Invoice['status']) => void;
+  addAnnouncement: (input: Omit<Announcement, 'id' | 'orgId' | 'createdBy' | 'createdAt'>) => void;
+  addAsset: (input: Omit<Asset, 'id' | 'orgId' | 'assetCode' | 'createdAt'> & { assetCode?: string }) => void;
+  setAssetStatus: (id: string, status: Asset['status'], assignedToId?: string) => void;
+  fmtMoney: (amount: number) => string;
+  budgetSpent: (budgetId: string) => number;
+  pettyCashBalance: () => number;
+  /* AI seats & feature flags & brand */
+  setUserAI: (userId: string, enabled: boolean) => void;
+  aiSeatsUsed: number;
+  setFlags: (patch: Partial<FeatureFlags>) => void;
+  setBrand: (patch: Partial<OrgBrand> & { website?: string; logoUrl?: string; currency?: Organisation['currency'] }) => void;
+  setProfilePhoto: (dataUrl: string | undefined) => void;
+  flag: (k: FlagKey) => boolean;
+  myAI: boolean;
 }
 
 const Ctx = createContext<StoreCtx | null>(null);
@@ -405,7 +429,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           { category: 'Deadlines', inApp: true, email: true, browser: false },
           { category: 'System', inApp: true, email: false, browser: false },
         ],
-        setupComplete: false, createdAt: new Date().toISOString(),
+        setupComplete: false,
+        currency: { code: 'USD', symbol: '$' },
+        brand: { primary: '#146355', secondary: '#9C6B1E' },
+        flags: { finance: true, assets: true, announcements: true, deadlines: true, ai: true, hr: false, procurement: true, projects: false, board: false },
+        aiSeats: 100,
+        pettyCashOpening: 0,
+        budgetAlertPct: [70, 80, 90, 100],
+        createdAt: new Date().toISOString(),
       });
       adminId = uid('u');
       const name = `${su.firstName} ${su.lastName}`;
@@ -414,6 +445,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         active: true, initials: `${su.firstName[0] ?? ''}${su.lastName[0] ?? ''}`.toUpperCase(),
         color: '#146355', pwdHash: su.pwdHash, emailVerified: true, country: su.country,
         pwdChangedAt: new Date().toISOString(),
+        aiEnabled: true,
       });
       dd.pendingSignups = dd.pendingSignups.filter((p) => p.email !== em);
       createSession(dd, adminId);
@@ -481,6 +513,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           email: em, title: 'Staff', role: 'Staff', departmentId: depIds[i % Math.max(depIds.length, 1)],
           active: true, initials: em.slice(0, 2).toUpperCase(), color: colors[i % colors.length],
           pwdHash: hashSecret('cortexa'), emailVerified: false, pwdChangedAt: new Date().toISOString(),
+          aiEnabled: false,
         });
       });
       audit(dd, 'Organisation setup completed', 'organisation', o.name, o.id);
@@ -1068,7 +1101,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, [db, mutate]);
 
-  const addUser = useCallback((input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt'>) => {
+  const addUser = useCallback((input: Omit<User, 'id' | 'orgId' | 'initials' | 'color' | 'pwdHash' | 'emailVerified' | 'pwdChangedAt' | 'aiEnabled' | 'photo'>) => {
     if (!canUser('manageUsers')) return { ok: false, error: 'Only administrators can manage users.' };
     const em = normalizeEmail(input.email);
     if (!isValidEmail(em)) return { ok: false, error: 'Enter a valid email address.' };
@@ -1087,6 +1120,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         pwdHash: hashSecret('cortexa'),      // temp credential — rotated on first sign-in in production
         emailVerified: false,                 // invited users verify by email before activation
         pwdChangedAt: new Date().toISOString(),
+        aiEnabled: false,                     // AI seats are granted explicitly by the admin
       });
       audit(dd, 'Invited user', 'user', `${input.name} (${input.role})`);
       secAudit(dd, 'User account created (invite pending verification)', em, 'success', me);
@@ -1302,6 +1336,205 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return { answer: `Across the register I found ${bits.join(', ')} matching "${q}".`, links: links.slice(0, 4) };
   }, [db, me, searchAll]);
 
+  /* ── finance & operations ── */
+
+  const fmtMoney = useCallback((amount: number): string => {
+    const sym = org?.currency?.symbol ?? '$';
+    return `${sym}${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }, [org]);
+
+  const budgetSpent = useCallback((budgetId: string): number =>
+    db.finance.filter((t) => t.orgId === me?.orgId && t.kind === 'expenditure' && t.budgetId === budgetId && !['Rejected', 'Cancelled', 'Draft'].includes(t.status)).reduce((s, t) => s + t.amount, 0),
+  [db.finance, me]);
+
+  const pettyCashBalance = useCallback((): number => {
+    const pc = db.finance.filter((t) => t.orgId === me?.orgId && t.category === 'Petty Cash');
+    const inflow = pc.filter((t) => t.kind === 'income' && t.status === 'Paid').reduce((s, t) => s + t.amount, 0);
+    const outflow = pc.filter((t) => t.kind === 'expenditure' && t.status === 'Paid').reduce((s, t) => s + t.amount, 0);
+    return (org?.pettyCashOpening ?? 0) + inflow - outflow;
+  }, [db.finance, me, org]);
+
+  const finRef = useCallback((d: DB, kind: 'INC' | 'EXP'): string => {
+    const year = new Date().getFullYear();
+    const key = `${me?.orgId}:${kind}:${year}`;
+    const n = (d.counters[key] || 0) + 1;
+    d.counters[key] = n;
+    return `${kind}/${year}/${pad(n)}`;
+  }, [me]);
+
+  const addFinanceTxn = useCallback((input: Partial<FinanceTxn> & Pick<FinanceTxn, 'kind' | 'party' | 'description' | 'amount' | 'category'>): FinanceTxn | null => {
+    if (!canUser('finance')) { toast('Your role cannot record financial transactions.', 'error'); return null; }
+    let created: FinanceTxn | null = null;
+    mutate((dd) => {
+      const t: FinanceTxn = {
+        id: uid('fin'), orgId: me!.orgId, ref: finRef(dd, input.kind === 'income' ? 'INC' : 'EXP'),
+        kind: input.kind, date: input.date ?? dateOnly(0), party: input.party, description: input.description,
+        amount: input.amount, currency: org?.currency?.code ?? 'NGN', departmentId: input.departmentId,
+        category: input.category, budgetId: input.budgetId, paymentMethod: input.paymentMethod,
+        status: input.kind === 'income' ? 'Pending Approval' : 'Submitted',
+        requestedById: me!.id, notes: input.notes, createdAt: new Date().toISOString(),
+      };
+      dd.finance.unshift(t);
+      created = t;
+      audit(dd, input.kind === 'income' ? 'Recorded income' : 'Submitted expenditure', 'finance', `${t.ref} · ${t.party} · ${t.description}`, t.id);
+      if (input.kind === 'expenditure') {
+        notify(dd, undefined, 'Approvals', 'Expense submitted', `${t.description} — ${fmtMoney(t.amount)} awaiting approval`, { name: 'finance' });
+      }
+    });
+    if (created) toast(`${input.kind === 'income' ? 'Income' : 'Expenditure'} recorded · ${(created as FinanceTxn).ref}`);
+    return created;
+  }, [canUser, mutate, me, org, finRef, fmtMoney, toast]);
+
+  const setFinanceStatus = useCallback((id: string, status: FinanceTxn['status']) => {
+    mutate((dd) => {
+      const t = own(dd, dd.finance, id);
+      if (!t) return;
+      t.status = status;
+      if (status === 'Approved') t.approvedById = me!.id;
+      if (status === 'Paid') t.paidById = me!.id;
+      audit(dd, `Marked ${t.kind} ${status.toLowerCase()}`, 'finance', `${t.ref} · ${t.party}`, t.id);
+    });
+    toast(`${status === 'Approved' || status === 'Paid' ? status : 'Status'} recorded`, status === 'Rejected' ? 'error' : 'success');
+  }, [mutate, me, toast]);
+
+  const addBudgetLine = useCallback((input: Omit<BudgetLine, 'id' | 'orgId'>) => {
+    if (!canUser('finance')) { toast('Your role cannot manage budgets.', 'error'); return; }
+    mutate((dd) => {
+      dd.budgets.push({ id: uid('bdg'), orgId: me!.orgId, ...input });
+      audit(dd, 'Created budget line', 'finance', `${input.category} · ${fmtMoney(input.allocated)}`);
+    });
+    toast('Budget line added');
+  }, [canUser, mutate, me, fmtMoney, toast]);
+
+  const addVendor = useCallback((input: Omit<Vendor, 'id' | 'orgId' | 'createdAt'>) => {
+    if (!canUser('finance')) { toast('Your role cannot manage vendors.', 'error'); return; }
+    mutate((dd) => {
+      dd.vendors.unshift({ id: uid('vnd'), orgId: me!.orgId, createdAt: new Date().toISOString(), ...input });
+      audit(dd, 'Added vendor', 'finance', input.name);
+    });
+    toast('Vendor added to the directory');
+  }, [canUser, mutate, me, toast]);
+
+  const updateVendor = useCallback((id: string, patch: Partial<Vendor>) => {
+    mutate((dd) => {
+      const v = own(dd, dd.vendors, id);
+      if (v) { Object.assign(v, patch); audit(dd, 'Updated vendor', 'finance', v.name, v.id); }
+    });
+  }, [mutate]);
+
+  const addInvoice = useCallback((input: Omit<Invoice, 'id' | 'orgId' | 'ref' | 'createdAt'>): Invoice | null => {
+    if (!canUser('finance')) { toast('Your role cannot register invoices.', 'error'); return null; }
+    let created: Invoice | null = null;
+    mutate((dd) => {
+      const year = new Date().getFullYear();
+      const key = `${me?.orgId}:INV:${year}`;
+      const n = (dd.counters[key] || 0) + 1;
+      dd.counters[key] = n;
+      const inv: Invoice = { id: uid('inv'), orgId: me!.orgId, ref: `INV/${year}/${pad(n, 3)}`, createdAt: new Date().toISOString(), ...input };
+      dd.invoices.unshift(inv);
+      created = inv;
+      audit(dd, 'Registered invoice', 'finance', `${inv.ref} · ${fmtMoney(inv.amount)}`, inv.id);
+    });
+    if (created) toast(`Invoice ${(created as Invoice).ref} registered`);
+    return created;
+  }, [canUser, mutate, me, fmtMoney, toast]);
+
+  const setInvoiceStatus = useCallback((id: string, status: Invoice['status']) => {
+    mutate((dd) => {
+      const inv = own(dd, dd.invoices, id);
+      if (!inv) return;
+      inv.status = status;
+      audit(dd, `Invoice marked ${status.toLowerCase()}`, 'finance', inv.ref, inv.id);
+    });
+    toast(`Invoice marked ${status}`, status === 'Disputed' || status === 'Cancelled' ? 'error' : 'success');
+  }, [mutate, toast]);
+
+  const addAnnouncement = useCallback((input: Omit<Announcement, 'id' | 'orgId' | 'createdBy' | 'createdAt'>) => {
+    if (!canUser('announce')) { toast('Your role cannot publish announcements.', 'error'); return; }
+    mutate((dd) => {
+      dd.announcements.unshift({ id: uid('ann'), orgId: me!.orgId, createdBy: me!.id, createdAt: new Date().toISOString(), ...input });
+      audit(dd, 'Published announcement', 'announcement', input.title);
+      dd.users.filter((u) => u.orgId === me!.orgId && u.active).forEach((u) => {
+        if (input.targetDepartmentId && u.departmentId !== input.targetDepartmentId) return;
+        notify(dd, u.id, 'System', `Announcement: ${input.title}`, input.body, { name: 'dashboard' });
+      });
+    });
+    toast('Announcement published');
+  }, [canUser, mutate, me, toast]);
+
+  const addAsset = useCallback((input: Omit<Asset, 'id' | 'orgId' | 'assetCode' | 'createdAt'> & { assetCode?: string }) => {
+    if (!canUser('finance')) { toast('Your role cannot manage assets.', 'error'); return; }
+    mutate((dd) => {
+      const dept = dd.departments.find((x) => x.id === input.departmentId);
+      const code = input.assetCode?.trim() || `${dept?.code ?? 'GEN'}/${input.category.slice(0, 3).toUpperCase()}/${new Date().getFullYear()}/${pad(Math.floor(Math.random() * 900) + 100, 3)}`;
+      dd.assets.unshift({ id: uid('ast'), orgId: me!.orgId, assetCode: code, createdAt: new Date().toISOString(), ...input });
+      audit(dd, 'Registered asset', 'asset', `${code} · ${input.name}`);
+    });
+    toast('Asset registered');
+  }, [canUser, mutate, me, toast]);
+
+  const setAssetStatus = useCallback((id: string, status: Asset['status'], assignedToId?: string) => {
+    mutate((dd) => {
+      const a = own(dd, dd.assets, id);
+      if (!a) return;
+      a.status = status;
+      if (status === 'Assigned') a.assignedToId = assignedToId;
+      if (status === 'Available') a.assignedToId = undefined;
+      audit(dd, `Asset ${status.toLowerCase()}`, 'asset', `${a.assetCode} · ${a.name}`, a.id);
+    });
+    toast(`Asset marked ${status}`, 'info');
+  }, [mutate, toast]);
+
+  /* ── AI seats, feature flags, brand, profile photo ── */
+
+  const aiSeatsUsed = useMemo(() => users.filter((u) => u.aiEnabled).length, [users]);
+
+  const setUserAI = useCallback((userId: string, enabled: boolean) => {
+    if (!canUser('manageUsers')) { toast('Only administrators manage AI seats.', 'error'); return; }
+    if (enabled && aiSeatsUsed >= (org?.aiSeats ?? 0)) { toast('All AI seats are allocated. Upgrade the plan to add more.', 'error'); return; }
+    mutate((dd) => {
+      const u = own(dd, dd.users, userId);
+      if (!u) return;
+      u.aiEnabled = enabled;
+      audit(dd, enabled ? 'Granted AI access' : 'Revoked AI access', 'user', `${u.name} (${u.email})`, u.id);
+    });
+    toast(enabled ? 'AI access granted' : 'AI access revoked', 'info');
+  }, [canUser, aiSeatsUsed, org, mutate, toast]);
+
+  const setFlags = useCallback((patch: Partial<FeatureFlags>) => {
+    if (!canUser('manageOrg')) { toast('Only administrators change module visibility.', 'error'); return; }
+    mutate((dd) => {
+      const o = dd.orgs.find((x) => x.id === me!.orgId);
+      if (o) { o.flags = { ...o.flags, ...patch }; audit(dd, 'Updated module visibility', 'organisation', Object.entries(patch).map(([k, v]) => `${k}: ${v ? 'on' : 'off'}`).join(', '), o.id); }
+    });
+    toast('Module visibility updated');
+  }, [canUser, mutate, me, toast]);
+
+  const setBrand = useCallback((patch: Partial<OrgBrand> & { website?: string; logoUrl?: string; currency?: Organisation['currency'] }) => {
+    if (!canUser('manageOrg')) { toast('Only administrators change branding.', 'error'); return; }
+    mutate((dd) => {
+      const o = dd.orgs.find((x) => x.id === me!.orgId);
+      if (!o) return;
+      if (patch.primary !== undefined || patch.secondary !== undefined) o.brand = { ...o.brand, ...patch };
+      if (patch.website !== undefined) o.website = patch.website;
+      if (patch.logoUrl !== undefined) o.logoUrl = patch.logoUrl;
+      if (patch.currency !== undefined) o.currency = patch.currency;
+      audit(dd, 'Updated organisation branding', 'organisation', o.name, o.id);
+    });
+    toast('Branding saved');
+  }, [canUser, mutate, me, toast]);
+
+  const setProfilePhoto = useCallback((dataUrl: string | undefined) => {
+    mutate((dd) => {
+      const u = dd.users.find((x) => x.id === me?.id && x.orgId === me?.orgId);
+      if (u) { u.photo = dataUrl; audit(dd, dataUrl ? 'Updated profile photo' : 'Removed profile photo', 'user', u.name, u.id); }
+    });
+    toast(dataUrl ? 'Profile photo updated' : 'Profile photo removed', 'info');
+  }, [me, mutate, toast]);
+
+  const flag = useCallback((k: FlagKey): boolean => org?.flags?.[k] ?? false, [org]);
+  const myAI = useMemo(() => flag('ai') && (me?.aiEnabled ?? false), [flag, me]);
+
   /* ── value ── */
 
   const value: StoreCtx = {
@@ -1322,6 +1555,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     addUser, updateUser, updateOrg, setNotificationPrefs,
     markNotificationRead, markAllNotificationsRead,
     resetDemo,
+    addFinanceTxn, setFinanceStatus, addBudgetLine, addVendor, updateVendor,
+    addInvoice, setInvoiceStatus, addAnnouncement, addAsset, setAssetStatus,
+    fmtMoney, budgetSpent, pettyCashBalance,
+    setUserAI, aiSeatsUsed, setFlags, setBrand, setProfilePhoto, flag, myAI,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

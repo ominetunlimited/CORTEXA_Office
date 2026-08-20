@@ -5,7 +5,7 @@ import { ROLES, type Role } from '../lib/types';
 import { cx, fmtDateTime, pad, relTime } from '../lib/utils';
 import { IcShield, IcPlus, IcSearch, IcCheck, IcX, IcAlert, IcStamp, IcUsers } from '../components/icons';
 
-type AdminTab = 'users' | 'roles' | 'org' | 'workflow' | 'notifications' | 'audit' | 'danger';
+type AdminTab = 'users' | 'roles' | 'aiseats' | 'modules' | 'org' | 'workflow' | 'notifications' | 'audit' | 'danger';
 
 const MATRIX: { cap: _C; label: string }[] = [
   { cap: 'register', label: 'Register correspondence' },
@@ -13,10 +13,12 @@ const MATRIX: { cap: _C; label: string }[] = [
   { cap: 'assign', label: 'Assign & delegate' },
   { cap: 'respond', label: 'Dispatch responses' },
   { cap: 'approve', label: 'Approve documents & memos' },
+  { cap: 'finance', label: 'Record financial transactions & manage budgets' },
+  { cap: 'announce', label: 'Publish organisation announcements' },
   { cap: 'archive', label: 'Archive / restore records' },
   { cap: 'manageDept', label: 'Manage departments' },
-  { cap: 'manageUsers', label: 'Manage users (up to 20 seats)' },
-  { cap: 'manageOrg', label: 'Organisation settings' },
+  { cap: 'manageUsers', label: 'Manage users & AI seats' },
+  { cap: 'manageOrg', label: 'Organisation settings, branding & modules' },
   { cap: 'viewAudit', label: 'View audit trail' },
 ];
 
@@ -25,6 +27,8 @@ export function Admin() {
   const available: { id: AdminTab; label: string }[] = [];
   if (canUser('manageUsers')) available.push({ id: 'users', label: 'Users' });
   available.push({ id: 'roles', label: 'Roles & Permissions' });
+  if (canUser('manageUsers')) available.push({ id: 'aiseats', label: 'AI Assistant' });
+  if (canUser('manageOrg')) available.push({ id: 'modules', label: 'Modules' });
   if (canUser('manageOrg')) available.push({ id: 'org', label: 'Organisation' }, { id: 'workflow', label: 'Workflows' }, { id: 'notifications', label: 'Notifications' });
   if (canUser('viewAudit')) available.push({ id: 'audit', label: 'Audit Logs' });
   if (canUser('manageOrg')) available.push({ id: 'danger', label: 'Data' });
@@ -38,6 +42,8 @@ export function Admin() {
       <div className="mt-4">
         {tab === 'users' && <UsersTab />}
         {tab === 'roles' && <RolesTab />}
+        {tab === 'aiseats' && <AISeatsTab />}
+        {tab === 'modules' && <ModulesTab />}
         {tab === 'org' && <OrgTab />}
         {tab === 'workflow' && <WorkflowTab />}
         {tab === 'notifications' && <NotifTab />}
