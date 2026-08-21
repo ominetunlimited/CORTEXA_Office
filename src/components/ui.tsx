@@ -295,3 +295,41 @@ export function Stat({ label, value, sub, tone = 'neutral', onClick }: {
     </button>
   );
 }
+
+/* ── skeleton loaders ── */
+export function Skeleton({ className }: { className?: string }) {
+  return <div aria-hidden="true" className={cx('skeleton rounded', className)} />;
+}
+
+/** Rows that shimmer while a register view settles after a filter/tab change. */
+export function TableSkeleton({ rows = 5, cols = 5 }: { rows?: number; cols?: number }) {
+  return (
+    <div role="status" aria-label="Loading records" className="card overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-line flex gap-3">
+        {Array.from({ length: cols }).map((_, i) => (
+          <Skeleton key={i} className={cx('h-3', i === 0 ? 'w-24' : 'flex-1')} />
+        ))}
+      </div>
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} className="px-3 py-3 border-b border-line-soft last:border-0 flex items-center gap-3">
+          <Skeleton className="w-8 h-8 rounded-md shrink-0" />
+          <Skeleton className={cx('h-3', r % 2 ? 'w-2/5' : 'w-1/2')} />
+          <Skeleton className="h-3 flex-1 hidden sm:block" />
+          <Skeleton className="h-4 w-20 rounded-full hidden md:block" />
+        </div>
+      ))}
+      <span className="sr-only">Loading…</span>
+    </div>
+  );
+}
+
+/** Brief settling flag after `key` changes — drives skeleton flashes on filter switches. */
+export function useSettling(key: string, ms = 320): boolean {
+  const [settling, setSettling] = useState(true);
+  useEffect(() => {
+    setSettling(true);
+    const t = window.setTimeout(() => setSettling(false), ms);
+    return () => window.clearTimeout(t);
+  }, [key, ms]);
+  return settling;
+}

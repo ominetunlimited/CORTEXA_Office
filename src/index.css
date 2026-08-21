@@ -183,6 +183,12 @@ body {
     @apply bg-white/[0.1] text-paper;
     box-shadow: inset 2px 0 0 var(--color-brass-400);
   }
+
+  .skeleton {
+    background: linear-gradient(90deg, #e6e8dd 0%, #f0f1e9 40%, #e6e8dd 80%);
+    background-size: 840px 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
 }
 
 /* motion */
@@ -245,6 +251,53 @@ body {
 @keyframes spin-slow {
   to {
     transform: rotate(360deg);
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: -420px 0;
+  }
+  100% {
+    background-position: 420px 0;
+  }
+}
+
+/* visible keyboard focus — WCAG 2.2 */
+:focus-visible {
+  outline: 2px solid var(--color-brass-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: none; /* inputs carry their own ring */
+}
+
+.skip-link {
+  position: fixed;
+  top: -48px;
+  left: 12px;
+  z-index: 100;
+  background: var(--color-pine-800);
+  color: var(--color-paper);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 @keyframes shake {

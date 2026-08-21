@@ -161,6 +161,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-full flex">
+      <a href="#main-content" className="skip-link">Skip to main content</a>
       {/* ── sidebar ── */}
       {sideOpen && <div className="fixed inset-0 z-40 bg-pine-950/50 lg:hidden anim-fade" onClick={() => setSideOpen(false)} />}
       <aside className={cx(
@@ -287,7 +288,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="md:hidden px-4 pb-2.5"><GlobalSearch /></div>
         </header>
 
-        <main className="flex-1 px-4 sm:px-6 py-5 max-w-[1440px] w-full mx-auto">{children}</main>
+        <main id="main-content" tabIndex={-1} className="flex-1 px-4 sm:px-6 py-5 max-w-[1440px] w-full mx-auto outline-none">{children}</main>
         <footer className="px-6 py-3 border-t border-line text-[10.5px] text-ink-faint flex flex-wrap items-center gap-x-4 gap-y-1">
           <span className="font-mono">CORTEXA · demo tenant</span>
           <span>Multi-tenant isolation enforced per organisation</span>

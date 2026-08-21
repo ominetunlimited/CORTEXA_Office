@@ -7,6 +7,8 @@ import {
   type DispatchMethod, type ResponseOption,
 } from '../lib/types';
 import { dateOnly, fmtDate } from '../lib/utils';
+import { readHead, validateUpload, sanitizeFilename } from '../lib/security';
+import { Spinner } from './authbits';
 
 export type QAKey = 'corr' | 'doc' | 'meeting' | 'task' | 'memo' | 'matter' | 'contact' | null;
 
@@ -193,7 +195,21 @@ function DocForm({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [body, setBody] = useState('');
   const [matterId, setMatterId] = useState('');
   const [tried, setTried] = useState(false);
+  const [fileError, setFileError] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const matters = db.matters.filter((m) => m.orgId === me?.orgId && !m.archived);
+
+  /* file intake: never trust File.type — sniff magic bytes, sanitise the name */
+  const onFile = async (f: File) => {
+    setFileError('');
+    const head = await readHead(f, 8);
+    const check = validateUpload(f, head);
+    if (!check.ok) { setFileError(check.error ?? 'This file cannot be accepted.'); setFileName(''); setSizeKb(0); return; }
+    setFileName(check.safeName ?? sanitizeFilename(f.name));
+    setSizeKb(Math.max(8, Math.round(f.size / 1024)));
+    if (!title) setTitle(check.safeName!.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '));
+  };
 
   const ocrRef = useMemo(() => {
     if (!isScan || !body) return null;
@@ -204,21 +220,45 @@ function DocForm({ open, onClose }: { open: boolean; onClose: () => void }) {
 
   const submit = () => {
     setTried(true);
-    if (!title.trim() || !fileName.trim()) return;
-    const doc = addDocument({
-      title: title.trim(), category, departmentId: departmentId || undefined, security,
-      fileName: fileName.trim(), sizeKb: sizeKb || 180,
-      body: body.trim() || undefined, ocr: isScan, matterId: matterId || undefined,
-      status: 'Approved',
-    });
-    if (doc) { onClose(); setTitle(''); setFileName(''); setBody(''); setMatterId(''); setTried(false); nav({ name: 'documents', id: doc.id }); }
+    if (!title.trim() || !fileName.trim() || uploading) return;
+    setUploading(true);
+    setProgress(0);
+    /* simulate a streamed, integrity-checked upload so the UI never freezes or double-submits */
+    const iv = window.setInterval(() => {
+      setProgress((p) => Math.min(100, p + 14 + Math.random() * 10));
+    }, 90);
+    window.setTimeout(() => {
+      window.clearInterval(iv);
+      setProgress(100);
+      const doc = addDocument({
+        title: title.trim(), category, departmentId: departmentId || undefined, security,
+        fileName: sanitizeFilename(fileName.trim()), sizeKb: sizeKb || 180,
+        body: body.trim() || undefined, ocr: isScan, matterId: matterId || undefined,
+        status: 'Approved',
+      });
+      setUploading(false);
+      setProgress(0);
+      if (doc) { onClose(); setTitle(''); setFileName(''); setBody(''); setMatterId(''); setTried(false); setFileError(''); nav({ name: 'documents', id: doc.id }); }
+    }, 780);
   };
 
   return (
     <Modal open={open} onClose={onClose} title="Upload document" subtitle="Stored to the institutional records vault · metadata indexed for search" w="max-w-2xl"
       footer={<>
-        <button className="btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn-primary" onClick={submit}>Upload & register</button>
+        {uploading && (
+          <div className="flex-1 mr-2">
+            <div className="flex items-center gap-2 text-[11.5px] text-ink-faint mb-1">
+              <Spinner size={12} /> Uploading document… {Math.round(progress)}%
+            </div>
+            <div className="h-1.5 rounded-full bg-line-soft overflow-hidden">
+              <div className="h-full rounded-full bg-pine-600 transition-all duration-150" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        )}
+        <button className="btn-ghost" onClick={onClose} disabled={uploading}>Cancel</button>
+        <button className="btn-primary" onClick={submit} disabled={uploading}>
+          {uploading ? <><Spinner size={13} /> Uploading…</> : 'Upload & register'}
+        </button>
       </>}>
       <div className="grid sm:grid-cols-2 gap-3.5">
         <div className="sm:col-span-2">
@@ -229,15 +269,22 @@ function DocForm({ open, onClose }: { open: boolean; onClose: () => void }) {
         <label className="sm:col-span-2 flex items-center gap-3 border border-dashed border-pine-300 bg-pine-50/50 rounded-md px-3.5 py-3 cursor-pointer hover:bg-pine-50 transition-colors">
           <input type="file" className="hidden" onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) { setFileName(f.name); setSizeKb(Math.max(8, Math.round(f.size / 1024))); if (!title) setTitle(f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ')); }
+            if (f) void onFile(f);
+            e.target.value = '';
           }} />
           <span className="text-pine-600"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 15V4M7.5 8 12 3.5 16.5 8" /><path d="M4.5 19.5h15" /></svg></span>
           <span className="text-[13px] text-ink-soft">
             {fileName ? <><span className="font-semibold text-ink">{fileName}</span> · {sizeKb} KB — click to replace</> : 'Choose a file (PDF, DOCX, XLSX, image…) or type a filename below'}
           </span>
         </label>
+        {fileError && (
+          <div className="sm:col-span-2 rounded-md border border-clay-100 bg-clay-50 px-3 py-2 text-[12.5px] text-clay-700">
+            {fileError}
+          </div>
+        )}
         {!fileName && (
-          <Field label="Filename" req error={tried && !fileName.trim() ? 'Provide a file (or filename)' : undefined}>
+          <Field label="Filename" req error={tried && !fileName.trim() ? 'Provide a file (or filename)' : undefined}
+            hint="Names are sanitised server-side — path separators, traversal sequences and script characters are stripped.">
             <input className="input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="document.pdf" />
           </Field>
         )}
