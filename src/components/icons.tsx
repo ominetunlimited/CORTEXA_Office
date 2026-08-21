@@ -122,6 +122,9 @@ export const IcBranch = (p: P) => (
   <Svg {...p}><circle cx="6.5" cy="6" r="2.2" /><circle cx="6.5" cy="18" r="2.2" /><circle cx="17.5" cy="9" r="2.2" /><path d="M6.5 8.2v7.6M8.6 7.2c4 .8 6.6 1 8.4 1.4" /></Svg>
 );
 export const IcFlag = (p: P) => (<Svg {...p}><path d="M6 21V4" /><path d="M6 4.5c4-2 8 2 12 0V13c-4 2-8-2-12 0" /></Svg>);
+export const IcPrinter = (p: P) => (
+  <Svg {...p}><path d="M7 8V3.5h10V8" /><rect x="4" y="8" width="16" height="8" rx="1.5" /><path d="M7 13.5h10v7H7z" /><path d="M17 11h.5" /></Svg>
+);
 
 /* brand seal */
 export function CortexaSeal({ size = 34, className }: { size?: number; className?: string }) {

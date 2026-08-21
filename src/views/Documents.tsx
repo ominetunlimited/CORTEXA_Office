@@ -7,7 +7,8 @@ import {
   type DocumentRecord, type SecurityLevel, type ApprovalState,
 } from '../lib/types';
 import { cx, download, fileSizeLabel, fmtDate, fmtDateTime, relTime } from '../lib/utils';
-import { IcFile, IcSearch, IcPlus, IcDownload, IcPaperclip, IcHistory, IcStamp, IcArchive, IcRestore, IcScan, IcCheck, IcX, IcEdit, IcLock, IcSeal } from '../components/icons';
+import { isDocOffline, saveDocOffline, removeDocOffline } from '../lib/offline';
+import { IcFile, IcSearch, IcPlus, IcDownload, IcPaperclip, IcHistory, IcStamp, IcArchive, IcRestore, IcScan, IcCheck, IcX, IcEdit, IcLock, IcSeal, IcPrinter } from '../components/icons';
 
 export function Documents() {
   const { db, me, users, departments, route, nav, canUser } = useStore();
@@ -101,7 +102,20 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
   const [comment, setComment] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState(d.title);
+  const [offline, setOffline] = useState(() => isDocOffline(d.id));
   const readOnly = !canUser('create');
+
+  const toggleOffline = () => {
+    if (offline) {
+      removeDocOffline(d.id);
+      setOffline(false);
+      toast('Offline copy removed — the register record is untouched', 'info');
+    } else {
+      const r = saveDocOffline(d);
+      if (r.ok) { setOffline(true); toast('Available offline ✓', 'success'); }
+      else toast(r.error ?? 'Unable to save offline.', 'error');
+    }
+  };
 
   const approval = db.approvals.find((a) => a.recordId === d.id);
   const comments = db.comments.filter((x) => x.targetType === 'document' && x.targetId === d.id);
@@ -117,6 +131,11 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
     toast('Secure download prepared', 'info');
   };
 
+  const doPrint = () => {
+    /* the print stylesheet isolates the record for a clean institutional copy */
+    window.print();
+  };
+
   return (
     <Drawer open onClose={onClose} w="max-w-2xl"
       title={<span className="flex items-center gap-2 flex-wrap"><span className="ref text-pine-700">{d.fileNumber}</span><Chip meta={DOC_STATUS_META[d.status]} /><Chip meta={SECURITY_META[d.security]} /></span>}
@@ -124,6 +143,11 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
       footer={
         <div className="flex flex-wrap gap-2">
           <button className="btn-primary btn-sm" onClick={doDownload}><IcDownload size={13} /> Download</button>
+          <button className="btn-ghost btn-sm" onClick={doPrint} title="Print this record"><IcPrinter size={13} /> Print</button>
+          <button className={cx('btn-sm', offline ? 'btn-brass' : 'btn-ghost')} onClick={toggleOffline}
+            title={offline ? 'A local copy is cached for offline use — click to remove it' : 'Cache this document for offline use'}>
+            {offline ? <><IcCheck size={13} /> Available offline</> : <><IcArchive size={13} /> Make available offline</>}
+          </button>
           {canUser('create') && <button className="btn-ghost btn-sm" onClick={() => setVerOpen(true)}><IcHistory size={13} /> New version</button>}
           {myStep && <button className="btn-brass btn-sm" onClick={() => setDecideOpen('Approved')}><IcCheck size={13} /> Approve</button>}
           {myStep && <button className="btn-danger btn-sm" onClick={() => setDecideOpen('Rejected')}><IcX size={13} /> Reject</button>}

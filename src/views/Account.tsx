@@ -3,8 +3,9 @@ import { useStore } from '../lib/store';
 import { PageHead, Tabs, Field, Chip, Avatar, Confirm } from '../components/ui';
 import { PasswordField, PasswordMeter, CountrySelect, Spinner, Alert } from '../components/authbits';
 import { COUNTRIES } from '../lib/security';
-import { cx, relTime, fmtDateTime } from '../lib/utils';
-import { IcCheck, IcShield, IcLock, IcLogout, IcClock } from '../components/icons';
+import { cx, relTime, fmtDateTime, fileSizeLabel } from '../lib/utils';
+import { getOfflineDocs, removeDocOffline, offlineStorageKb, queueSize } from '../lib/offline';
+import { IcCheck, IcShield, IcLock, IcLogout, IcClock, IcArchive, IcFile } from '../components/icons';
 
 export function Account() {
   const { me, departments } = useStore();
@@ -30,11 +31,13 @@ export function Account() {
         { id: 'profile', label: 'Profile' },
         { id: 'security', label: 'Security' },
         { id: 'activity', label: 'Login activity' },
+        { id: 'offline', label: 'Offline files' },
       ]} />
       <div className="pt-4">
         {tab === 'profile' && <ProfileTab />}
         {tab === 'security' && <SecurityTab />}
         {tab === 'activity' && <ActivityTab />}
+        {tab === 'offline' && <OfflineTab />}
       </div>
     </div>
   );
@@ -202,6 +205,79 @@ function ActivityTab() {
           <span className="text-[10.5px] font-mono text-ink-faint whitespace-nowrap">{relTime(e.at)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ── offline files ───────────────────────────────────────────────────── */
+function OfflineTab() {
+  const { nav, toast } = useStore();
+  const [docs, setDocs] = useState(() => getOfflineDocs());
+  const queued = queueSize();
+  const usedKb = offlineStorageKb();
+
+  const refresh = () => setDocs(getOfflineDocs());
+  const remove = (id: string) => {
+    removeDocOffline(id);
+    refresh();
+    toast('Offline copy removed — the register record is untouched', 'info');
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div className="card p-4">
+          <p className="font-display font-extrabold text-[24px] leading-none text-pine-700">{docs.length}</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint mt-1">Documents offline</p>
+        </div>
+        <div className="card p-4">
+          <p className="font-display font-extrabold text-[24px] leading-none text-ink">{fileSizeLabel(usedKb)}</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint mt-1">Storage used</p>
+        </div>
+        <div className="card p-4">
+          <p className={cx('font-display font-extrabold text-[24px] leading-none', queued ? 'text-brass-600' : 'text-moss-700')}>{queued}</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint mt-1">Drafts awaiting sync</p>
+        </div>
+      </div>
+
+      <div className="card p-4 border-brass-100 bg-brass-50/60">
+        <p className="text-[12.5px] text-ink-soft leading-relaxed">
+          <span className="font-semibold text-ink">Offline is deliberate.</span> Only documents you mark
+          {" "}&ldquo;Make available offline&rdquo; are cached on this device. Removing a local copy never deletes the
+          institutional record — it stays in the register. Records created while offline are labelled
+          {" "}<span className="chip bg-brass-100 text-brass-700">DRAFT · OFFLINE</span> and reconciled automatically when you reconnect.
+        </p>
+      </div>
+
+      <div className="card overflow-hidden">
+        <div className="px-4 pt-3.5 pb-2.5 border-b border-line-soft flex items-center gap-2">
+          <IcArchive size={15} className="text-pine-600" />
+          <h3 className="font-display font-bold text-[14px] text-ink">Available offline</h3>
+          <span className="ml-auto ref text-ink-faint">{docs.length} cached</span>
+        </div>
+        {docs.length === 0 ? (
+          <p className="px-4 py-8 text-center text-[12.5px] text-ink-faint">
+            No documents are cached for offline use. Open a document and choose &ldquo;Make available offline&rdquo;.
+          </p>
+        ) : (
+          <div className="divide-y divide-line-soft">
+            {docs.map((d) => (
+              <div key={d.id} className="px-4 py-3 flex items-center gap-3">
+                <span className="w-8 h-8 rounded-md bg-pine-50 text-pine-600 flex items-center justify-center shrink-0"><IcFile size={15} /></span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[12.5px] font-medium text-ink truncate">{d.title}</p>
+                  <p className="text-[11px] text-ink-faint truncate">
+                    <span className="ref">{d.fileNumber}</span> · {d.category} · {fileSizeLabel(d.sizeKb)} · saved {relTime(new Date(d.savedAt).toISOString())}
+                  </p>
+                </div>
+                <span className="chip bg-moss-100 text-moss-700 shrink-0"><IcCheck size={10} /> Offline</span>
+                <button className="btn-ghost btn-sm shrink-0" onClick={() => nav({ name: 'documents', id: d.id })}>Open</button>
+                <button className="btn-ghost btn-sm !text-clay-600 shrink-0" onClick={() => remove(d.id)}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

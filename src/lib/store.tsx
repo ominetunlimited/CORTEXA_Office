@@ -13,8 +13,15 @@ import {
   generateOtp, otpExpiresAt, OTP_RULES, lockoutAfterFailures, deviceLabel,
   SESSION_IDLE_MS, SESSION_ABS_MS, sanitizeFilename, storageKey,
 } from './security';
+import { enqueueIfOffline } from './offline';
 
 const LS_KEY = `cortexa.db.v${SEED_VERSION}`;
+
+/* Queue a record as an offline draft when the device has no connection.
+   Returns true if the record was created offline (labelled DRAFT-OFFLINE). */
+function offlineDraft(kind: string, label: string): boolean {
+  return enqueueIfOffline(kind, label);
+}
 
 /* ── permission model ─────────────────────────────────────────────────── */
 
@@ -637,7 +644,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
       if (input.matterId) matterEvent(dd, input.matterId, `${input.direction === 'incoming' ? 'Correspondence received' : 'Outgoing correspondence'} — ${c.subject}`, 'correspondence');
     });
-    if (created) toast(`${(created as Correspondence).ref} registered`);
+    if (created) {
+      if (offlineDraft('correspondence', (created as Correspondence).subject)) toast('Saved offline — will sync when you reconnect', 'info');
+      else toast(`${(created as Correspondence).ref} registered`);
+    }
     return created;
   }, [canUser, mutate, me, toast]);
 
@@ -708,7 +718,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       audit(dd, input.ocr ? 'Uploaded scanned document (OCR indexed)' : 'Uploaded document', 'document', rec.title, rec.id);
       if (input.matterId) matterEvent(dd, input.matterId, `Document uploaded — ${rec.title}`, 'document');
     });
-    if (created) toast(`${(created as DocumentRecord).fileNumber} · ${input.title} uploaded`);
+    if (created) {
+      if (offlineDraft('document', input.title)) toast('Saved offline — will sync when you reconnect', 'info');
+      else toast(`${(created as DocumentRecord).fileNumber} · ${input.title} uploaded`);
+    }
     return created;
   }, [canUser, mutate, me, toast]);
 
@@ -839,7 +852,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         if (c) audit(dd, 'Linked meeting to correspondence', 'meeting', `${m.title} ↔ ${c.ref}`, m.id);
       }
     });
-    if (created) toast('Meeting scheduled');
+    if (created) {
+      if (offlineDraft('meeting', (created as Meeting).title)) toast('Saved offline — will sync when you reconnect', 'info');
+      else toast('Meeting scheduled');
+    }
     return created;
   }, [canUser, mutate, me, toast]);
 
@@ -914,7 +930,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
       if (t.relatedType === 'matter') matterEvent(dd, t.relatedId, `Task assigned — ${t.title}`, 'task');
     });
-    if (created) toast('Task created');
+    if (created) {
+      if (offlineDraft('task', (created as TaskItem).title)) toast('Saved offline — will sync when you reconnect', 'info');
+      else toast('Task created');
+    }
     return created;
   }, [canUser, mutate, me, toast]);
 
@@ -997,7 +1016,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       created = rec;
       audit(dd, 'Created internal memorandum', 'document', rec.title, rec.id);
     });
-    if (created) toast('Memorandum drafted — approval workflow started');
+    if (created) {
+      if (offlineDraft('memo', input.subject)) toast('Saved offline — will sync when you reconnect', 'info');
+      else toast('Memorandum drafted — approval workflow started');
+    }
     return created;
   }, [canUser, mutate, me, org, toast]);
 

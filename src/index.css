@@ -370,3 +370,47 @@ body {
 .stagger > *:nth-child(8) { animation-delay: 0.3s; }
 .stagger > *:nth-child(9) { animation-delay: 0.34s; }
 .stagger > *:nth-child(10) { animation-delay: 0.38s; }
+
+/* ── print: produce a clean institutional document / register ────────── */
+@media print {
+  @page {
+    margin: 18mm 16mm;
+  }
+  body {
+    background: #fff !important;
+    font-size: 12px;
+  }
+  /* hide chrome: sidebar, header, footer, drawers, toasts, quick actions */
+  aside,
+  header,
+  footer,
+  .no-print,
+  [data-print-hide] {
+    display: none !important;
+  }
+  /* let the record breathe on paper */
+  main {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+  .ledger-bg {
+    background: #fff !important;
+  }
+  .card {
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+  table {
+    break-inside: auto;
+  }
+  tr {
+    break-inside: avoid;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .ref {
+    font-size: 10.5px;
+  }
+}

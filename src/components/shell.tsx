@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { Route, NotificationItem } from '../lib/types';
 import { relTime, cx, fmtTime12 } from '../lib/utils';
+import { useNetwork, queueSize } from '../lib/offline';
 import { Drawer, Avatar, RoleBadge, Chip, ToastHost } from './ui';
 import { QAHost, type QAKey } from './quick';
 import {
@@ -45,6 +46,27 @@ function LiveRegister() {
     <span className="hidden xl:flex items-center gap-2 text-[11px] font-mono text-ink-faint" title="Active records across correspondence, documents, matters, meetings and tasks">
       <span className="dot bg-pine-500 live-dot" />
       register live · {count} records
+    </span>
+  );
+}
+
+/* live connectivity pill — ONLINE / OFFLINE / SYNCING */
+function NetworkPill() {
+  const { toast } = useStore();
+  const net = useNetwork((queued: number) => {
+    toast(queued > 0 ? `Synced successfully — ${queued} offline draft${queued === 1 ? '' : 's'} reconciled` : 'Back online', 'success');
+  });
+  const pending = queueSize();
+  const meta: Record<string, { label: string; cls: string; dot: string; title: string }> = {
+    online: { label: 'Online', cls: 'bg-moss-100 text-moss-700', dot: 'bg-moss-600', title: 'Connected — changes save to the register' },
+    offline: { label: `Offline${pending ? ` · ${pending} queued` : ''}`, cls: 'bg-clay-100 text-clay-700', dot: 'bg-clay-500', title: 'No connection — records you create are queued as offline drafts and synced on reconnect' },
+    syncing: { label: 'Syncing…', cls: 'bg-brass-100 text-brass-700', dot: 'bg-brass-500', title: 'Reconnecting and reconciling offline drafts' },
+  };
+  const m = meta[net];
+  return (
+    <span role="status" title={m.title} className={cx('hidden sm:inline-flex items-center gap-1.5 chip', m.cls)}>
+      <span className={cx('dot', m.dot, net === 'syncing' && 'animate-pulse', net === 'offline' && 'pulse-urgent')} />
+      {m.label}
     </span>
   );
 }
@@ -226,6 +248,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <h2 className="font-display font-bold text-[14.5px] text-ink leading-tight truncate">{TITLES[route.name] ?? 'Cortexa'}</h2>
             </div>
             <div className="flex-1" />
+            <NetworkPill />
             <LiveRegister />
             <span className="hidden md:flex items-center gap-1.5 text-[11.5px] font-mono text-ink-faint"><IcClock size={13} />{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <div className="hidden md:block"><GlobalSearch /></div>
