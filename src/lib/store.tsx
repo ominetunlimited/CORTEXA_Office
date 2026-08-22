@@ -616,6 +616,36 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, [db, mutate]);
 
+  /* session expiry enforcement — idle timeout + absolute lifetime.
+     Checked on boot and every 30s; expired sessions are revoked with a
+     security-audit entry and the user is returned to sign-in.            */
+  useEffect(() => {
+    const check = () => {
+      const sid = db.session.sessionId;
+      const uId = db.session.userId;
+      if (!sid || !uId) return;
+      const s = db.sessions.find((x) => x.id === sid);
+      if (!s) return;
+      const now = Date.now();
+      const idleOut = now - s.lastSeen > SESSION_IDLE_MS;
+      const absOut = now - s.createdAt > SESSION_ABS_MS;
+      if (idleOut || absOut) {
+        mutate((dd) => {
+          const u = dd.users.find((x) => x.id === uId);
+          secAudit(dd, 'Session expired', `${u?.email ?? 'user'} — ${idleOut ? 'idle timeout' : 'absolute lifetime reached'}`, 'denied');
+          dd.session.userId = null;
+          dd.session.sessionId = null;
+        });
+        toast('Your session expired — please sign in again.', 'info');
+      }
+      /* NB: no keep-alive here — activity touches come only from real user
+         input (shell pointerdown/keydown), otherwise idle expiry would never fire */
+    };
+    check();
+    const t = window.setInterval(check, 30000);
+    return () => window.clearInterval(t);
+  }, [db, mutate, toast]);
+
   const securityLog = useMemo(
     () => db.audit.filter((a) => a.recordType === 'security' && (!me || a.orgId === me.orgId || a.orgId === '')).slice(0, 30),
     [db.audit, me],
@@ -1217,6 +1247,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const resetDemo = useCallback(() => {
     localStorage.removeItem(LS_KEY);
     const fresh = buildSeed();
+    dbRef.current = fresh; /* keep the mutation ref in sync before re-render */
     setDb(fresh);
     setRoute({ name: 'dashboard' });
     toast('Demo data restored to its original state', 'info');

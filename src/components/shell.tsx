@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { Route, NotificationItem } from '../lib/types';
-import { relTime, cx, fmtTime12 } from '../lib/utils';
+import { relTime, cx, fmtTime12, daysUntil } from '../lib/utils';
 import { useNetwork, queueSize } from '../lib/offline';
 import { Drawer, Avatar, RoleBadge, Chip, ToastHost } from './ui';
 import { QAHost, type QAKey } from './quick';
@@ -120,7 +120,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const unread = myNotifs.filter((n) => !n.read).length;
 
   const overdueTasks = useMemo(
-    () => db.tasks.filter((t) => t.orgId === me?.orgId && !t.archived && !['Completed', 'Cancelled'].includes(t.status) && t.dueDate && new Date(t.dueDate).getTime() < Date.now() && new Date(t.dueDate).toDateString() !== new Date().toDateString() ? new Date(t.dueDate).getTime() < new Date(new Date().toDateString()).getTime() : false).length,
+    () => db.tasks.filter((t) => t.orgId === me?.orgId && !t.archived && !['Completed', 'Cancelled'].includes(t.status) && t.dueDate && daysUntil(t.dueDate) < 0).length,
     [db.tasks, me],
   );
 

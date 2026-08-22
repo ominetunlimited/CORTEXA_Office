@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
 import { PageHead, Chip, EmptyState, Modal, Field, Avatar, Toggle } from '../components/ui';
 import { QAHost } from '../components/quick';
@@ -18,6 +18,10 @@ export function TasksView() {
   const [deptId, setDeptId] = useState('');
   const [qa, setQa] = useState(false);
   const [selId, setSelId] = useState<string | null>(route.id ?? null);
+
+  /* deep-link sync — opening a task from a notification or dashboard while
+     already on the tasks page must open its detail panel too */
+  useEffect(() => { if (route.id) setSelId(route.id); }, [route.id]);
 
   const tasks = useMemo(() => {
     const qq = q.trim().toLowerCase();

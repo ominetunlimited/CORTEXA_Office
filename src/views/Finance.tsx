@@ -445,7 +445,7 @@ function VendorsTab({ vendors, invoices, fmtMoney }: { vendors: { id: string; na
 
 /* ── invoices ── */
 function InvoicesTab({ invoices, vendors, fmtMoney }: { invoices: { id: string; ref: string; vendorId?: string; date: string; dueDate?: string; amount: number; status: InvoiceStatus }[]; vendors: { id: string; name: string }[]; fmtMoney: (n: number) => string }) {
-  const { canUser, addInvoice, setInvoiceStatus } = useStore();
+  const { canUser, addInvoice, setInvoiceStatus, org } = useStore();
   const [open, setOpen] = useState(false);
   const [vendor, setVendor] = useState(''); const [amt, setAmt] = useState(''); const [date, setDate] = useState(dateOnly(0)); const [due, setDue] = useState('');
   const vName = (id?: string) => vendors.find((v) => v.id === id)?.name ?? '—';
@@ -481,7 +481,7 @@ function InvoicesTab({ invoices, vendors, fmtMoney }: { invoices: { id: string; 
       {open && (
         <Modal open onClose={() => setOpen(false)} title="Register invoice" w="max-w-lg"
           footer={<><button className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
-            <button className="btn-primary" disabled={!vendor || Number(amt) <= 0} onClick={() => { addInvoice({ vendorId: vendor, amount: Number(amt), date, dueDate: due || undefined, currency: 'NGN', status: 'Received' }); setOpen(false); setVendor(''); setAmt(''); setDue(''); }}>Register</button></>}>
+            <button className="btn-primary" disabled={!vendor || Number(amt) <= 0} onClick={() => { addInvoice({ vendorId: vendor, amount: Number(amt), date, dueDate: due || undefined, currency: org?.currency?.code ?? 'NGN', status: 'Received' }); setOpen(false); setVendor(''); setAmt(''); setDue(''); }}>Register</button></>}>
           <div className="space-y-3">
             <Field label="Vendor" req><select className="input" value={vendor} onChange={(e) => setVendor(e.target.value)}><option value="">Select vendor…</option>{vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</select></Field>
             <div className="grid grid-cols-2 gap-3">

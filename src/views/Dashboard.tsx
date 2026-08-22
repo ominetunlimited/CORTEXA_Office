@@ -41,9 +41,9 @@ function RegistryPulse() {
       <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="overflow-visible">
         <polygon points={area} fill="var(--color-pine-600)" opacity="0.07" className="anim-fade" />
         <polyline points={pts('in')} fill="none" stroke="var(--color-pine-600)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-          pathLength={1} strokeDasharray="1" strokeDashoffset="1" className="chart-line" />
+          pathLength={1} strokeDasharray="1" strokeDashoffset="1" className="chart-line" style={{ '--dash': '1' } as React.CSSProperties} />
         <polyline points={pts('out')} fill="none" stroke="var(--color-brass-500)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
-          strokeDasharray="3 3" pathLength={1} className="chart-line" style={{ animationDelay: '0.15s' }} />
+          strokeDasharray="3 3" pathLength={1} className="chart-line" style={{ animationDelay: '0.15s', '--dash': '1' } as React.CSSProperties} />
         <circle cx={x(5)} cy={y(weeks[5].in)} r="3" fill="var(--color-pine-600)" className="live-dot" />
       </svg>
       <div className="text-[10px] leading-[1.5] text-ink-faint whitespace-nowrap">
