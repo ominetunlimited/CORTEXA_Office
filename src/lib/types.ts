@@ -391,12 +391,34 @@ export interface SecurityState {
   lastCodeEcho: Record<string, string>; // demo mail-relay only (simulated SMTP outbox)
 }
 
+export type OfficeType = 'Executive' | 'Administrative' | 'Departmental' | 'Directorate' | 'Unit' | 'Agency' | 'Secretariat' | 'Other';
+export const OFFICE_TYPES: OfficeType[] = ['Executive', 'Administrative', 'Departmental', 'Directorate', 'Unit', 'Agency', 'Secretariat', 'Other'];
+
+/** An Office is an organisational unit that can hold executives, secretaries
+ *  and staff. Organisation → Offices → Departments → Users (§8-§9).        */
+export interface Office {
+  id: string;
+  orgId: string;
+  name: string;               // e.g. "Office of the Vice Chancellor"
+  code: string;               // e.g. "VC"
+  description: string;
+  officeType: OfficeType;
+  parentOfficeId?: string;    // hierarchical offices where needed
+  headUserId?: string;        // the executive or head of office
+  executiveProfileId?: string;// link to the ExecutiveProfile when it is an executive office
+  status: 'Active' | 'Inactive';
+  createdAt: string;
+}
+
 export interface Department {
   id: string;
   orgId: string;
   name: string;
   code: string;
   headId?: string;
+  officeId?: string;          // the office this department sits under (§10)
+  parentDepartmentId?: string;// hierarchical departments where needed
+  status?: 'Active' | 'Inactive';
   description: string;
 }
 
@@ -676,6 +698,12 @@ export interface DB {
   invoices: Invoice[];
   announcements: Announcement[];
   assets: Asset[];
+  /* executive authority domain */
+  offices: Office[];
+  executives: ExecutiveProfile[];
+  delegations: ExecutiveDelegation[];
+  decisions: ExecutiveDecision[];
+  reports: ExecutiveReport[];
 }
 
 /* ── routing ──────────────────────────────────────────────────────────── */

@@ -3,6 +3,7 @@ import type {
   Matter, Meeting, TaskItem, ApprovalRecord, EmailRecord, NotificationItem,
   AuditEntry, CommentItem, Role, SecurityLevel, Priority, CorrType, CorrStatus,
   TaskStatus, MeetingStatus, ResponseOption, DocCategory, MatterEvent,
+  Office, ExecutiveProfile, ExecutiveDelegation, ExecutiveDecision, ExecutiveReport,
 } from './types';
 import { d, dateOnly, pad, uid, initials } from './utils';
 import { hashSecret, deviceLabel } from './security';
@@ -1038,6 +1039,56 @@ export function buildSeed(): DB {
     { id: uid('au'), orgId, at: d(-1, 7, 12), userId: 'unknown', userName: 'Unknown', action: 'Failed sign-in attempt (wrong password)', recordType: 'security', target: 'staff@cortexafoundation.demo', result: 'denied' },
     { id: uid('au'), orgId, at: d(-2, 17, 30), userId: 'u_1', userName: 'Adaeze Okafor', action: 'User signed in', recordType: 'security', target: 'Safari · macOS', result: 'success' },
   );
+
+  /* ── executive authority domain (§8-§10, §13) ─────────────────────────
+     Extends the existing demo organisation with an office structure and a
+     single executive desk. The four demo accounts are preserved; u_3 (the
+     seeded Executive) is granted the EXEC-001 desk and u_2 (the seeded
+     Secretary) is given scoped delegation — not executive authority.      */
+  const offices: Office[] = [
+    {
+      id: 'off_ed', orgId, name: 'Office of the Executive Director', code: 'ED',
+      description: 'Executive office of the Executive Director.', officeType: 'Executive',
+      headUserId: 'u_3', executiveProfileId: 'exec_001', status: 'Active', createdAt: d(-40, 9),
+    },
+    {
+      id: 'off_adm', orgId, name: 'Administration & Registry', code: 'ADM',
+      description: 'Executive secretariat, registry and general administration.', officeType: 'Administrative',
+      headUserId: 'u_9', status: 'Active', createdAt: d(-40, 9),
+    },
+  ];
+
+  const executives: ExecutiveProfile[] = [
+    {
+      id: 'exec_001', orgId, userId: 'u_3', title: 'Executive Director', execRef: 'EXEC-001',
+      level: 'Executive', departmentId: 'dep_adm',
+      officeTeam: [{ userId: 'u_2', officeRole: 'Executive Secretary' }],
+      createdAt: d(-40, 9),
+    },
+  ];
+
+  const delegations: ExecutiveDelegation[] = [
+    {
+      id: 'del_1', orgId, executiveId: 'exec_001', delegateUserId: 'u_2',
+      grants: ['MANAGE_EXECUTIVE_CALENDAR', 'PREPARE_EXECUTIVE_REPORT', 'VIEW_EXECUTIVE_CORRESPONDENCE'],
+      startsAt: d(-30, 9), expiresAt: undefined, acting: false, revoked: false, createdAt: d(-30, 9),
+    },
+  ];
+
+  const decisions: ExecutiveDecision[] = [
+    {
+      id: 'dec_1', orgId, ref: 'DEC/2026/001', date: dateOnly(-6), executiveId: 'exec_001',
+      matterId: 'm_housing', decision: 'Approve the Foundation position paper on community-led housing for the stakeholders dialogue.',
+      responsibleId: 'u_5', deadline: dateOnly(-2), status: 'Completed', supportingDocIds: [], taskId: tasks[0]?.id, createdAt: d(-6, 12),
+    },
+    {
+      id: 'dec_2', orgId, ref: 'DEC/2026/002', date: dateOnly(-2), executiveId: 'exec_001',
+      matterId: 'm_grant', decision: 'Finance to compile audited statements for the grant renewal due-diligence pack.',
+      responsibleId: 'u_6', deadline: dateOnly(6), status: 'In Progress', supportingDocIds: [], createdAt: d(-2, 15),
+    },
+  ];
+
+  const reports: ExecutiveReport[] = [];
 
   return {
     version: SEED_VERSION,
