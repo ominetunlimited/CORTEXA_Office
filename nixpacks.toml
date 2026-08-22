@@ -1,0 +1,16 @@
+# Fallback builder configuration for Railway/Nixpacks (used only if the
+# Dockerfile is not picked up). Pins Node 20 — Vite 6 + Tailwind CSS v4
+# fail to build on Node 18 — and defines the production start command.
+
+[variables]
+NIXPACKS_NODE_VERSION = '20'
+NODE_ENV = 'production'
+
+[phases.install]
+cmds = ['npm install --no-audit --no-fund']
+
+[phases.build]
+cmds = ['npm run build']
+
+[start]
+cmd = 'node server.js'
