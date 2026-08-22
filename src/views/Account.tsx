@@ -5,7 +5,10 @@ import { PasswordField, PasswordMeter, CountrySelect, Spinner, Alert } from '../
 import { COUNTRIES } from '../lib/security';
 import { cx, relTime, fmtDateTime, fileSizeLabel } from '../lib/utils';
 import { getOfflineDocs, removeDocOffline, offlineStorageKb, queueSize } from '../lib/offline';
-import { IcCheck, IcShield, IcLock, IcLogout, IcClock, IcArchive, IcFile } from '../components/icons';
+import {
+  platformAuthenticatorAvailable, isEnrolled, enrolledLabel, enrollBiometric, verifyBiometric, clearEnrollment,
+} from '../lib/biometrics';
+import { IcCheck, IcShield, IcLock, IcLogout, IcClock, IcArchive, IcFile, IcFingerprint } from '../components/icons';
 
 export function Account() {
   const { me, departments } = useStore();
@@ -280,6 +283,84 @@ function OfflineTab() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ── biometric unlock (WebAuthn) ────────────────────────────────────── */
+function BiometricCard() {
+  const { me } = useStore();
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [enrolled, setEnrolled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const userId = me?.id ?? '';
+
+  React.useEffect(() => {
+    let live = true;
+    platformAuthenticatorAvailable().then((ok) => { if (live) setAvailable(ok); });
+    return () => { live = false; };
+  }, []);
+
+  React.useEffect(() => { setEnrolled(isEnrolled(userId)); }, [userId]);
+
+  if (!me) return null;
+
+  const enroll = async () => {
+    setBusy(true); setMsg(null);
+    const r = await enrollBiometric(me.id, me.name);
+    setBusy(false);
+    if (r.ok) { setEnrolled(true); setMsg({ ok: true, text: 'Biometric unlock enrolled for this device.' }); }
+    else setMsg({ ok: false, text: r.reason ?? 'Could not enrol.' });
+  };
+
+  const verify = async () => {
+    setBusy(true); setMsg(null);
+    const r = await verifyBiometric(me.id);
+    setBusy(false);
+    setMsg(r.ok
+      ? { ok: true, text: 'Identity confirmed by your device authenticator.' }
+      : { ok: false, text: r.reason ?? 'Verification failed — use your password.' });
+  };
+
+  const remove = () => { clearEnrollment(me.id); setEnrolled(false); setMsg({ ok: true, text: 'Biometric enrollment removed from this device.' }); };
+
+  return (
+    <div className="card p-5">
+      <h3 className="font-display font-bold text-[15px] text-ink flex items-center gap-2">
+        <IcFingerprint size={16} className="text-pine-600" /> Biometric unlock
+      </h3>
+      {available === null ? (
+        <p className="text-[12px] text-ink-faint mt-2 flex items-center gap-2"><Spinner size={13} /> Checking this device…</p>
+      ) : !available ? (
+        <p className="text-[12px] text-ink-faint mt-2 leading-relaxed">
+          No fingerprint / Face ID / Windows Hello authenticator is available in this browser, so biometric unlock is disabled here.
+          You can always sign in with your password.
+        </p>
+      ) : (
+        <div className="mt-2">
+          <div className="flex items-center gap-2">
+            <Chip meta={enrolled
+              ? { label: enrolledLabel(me.id) ?? 'Enrolled', chip: 'bg-moss-100 text-moss-700', dot: 'bg-moss-600' }
+              : { label: 'Not enrolled', chip: 'bg-line-soft text-ink-soft', dot: 'bg-ink-faint' }} />
+          </div>
+          <p className="text-[12px] text-ink-faint mt-2 leading-relaxed">
+            Uses your device's secure authenticator. The key never leaves the secure element; CORTEXA stores only a non-sensitive enrollment marker on this device.
+          </p>
+          {msg && <div className="mt-2"><Alert kind={msg.ok ? 'success' : 'error'}>{msg.text}</Alert></div>}
+          <div className="flex flex-wrap gap-2 mt-3">
+            {enrolled ? (
+              <>
+                <button className="btn-primary" onClick={verify} disabled={busy}>{busy ? <Spinner size={13} /> : <IcFingerprint size={14} />} Verify</button>
+                <button className="btn-ghost !text-clay-600" onClick={remove} disabled={busy}>Remove</button>
+              </>
+            ) : (
+              <button className="btn-primary" onClick={enroll} disabled={busy}>{busy ? <Spinner size={13} /> : <IcFingerprint size={14} />} Enrol this device</button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
