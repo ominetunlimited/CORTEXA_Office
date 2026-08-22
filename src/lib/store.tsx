@@ -114,6 +114,14 @@ interface StoreCtx {
   addDocument: (input: Partial<DocumentRecord> & Pick<DocumentRecord, 'title' | 'category' | 'fileName'>) => DocumentRecord | null;
   addDocumentVersion: (docId: string, input: { fileName?: string; sizeKb?: number; note: string; body?: string }) => void;
   updateDocument: (id: string, patch: Partial<DocumentRecord>, label?: string) => void;
+  addDocTag: (docId: string, tag: string) => void;
+  removeDocTag: (docId: string, tag: string) => void;
+  lockDocument: (docId: string) => void;
+  unlockDocument: (docId: string) => void;
+  shareDocument: (docId: string, share: { userId?: string; departmentId?: string; name: string }) => void;
+  unshareDocument: (docId: string, shareId: string) => void;
+  compressDocument: (docId: string) => void;
+  secureDeleteDocument: (docId: string, password: string) => { ok: boolean; error?: string };
   restoreVersion: (docId: string, version: string) => void;
   addComment: (targetType: CommentItem['targetType'], targetId: string, text: string) => void;
   createMatter: (input: Partial<Matter> & Pick<Matter, 'title'>) => Matter | null;
@@ -227,8 +235,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const dismissToast = useCallback((id: string) => setToasts((t) => t.filter((x) => x.id !== id)), []);
 
   const mutate = useCallback((fn: (d: DB) => void) => {
-    /* synchronous clone-mutate-commit so callers can read created records immediately */
-    const next = structuredClone(dbRef.current);
+    /* synchronous clone-mutate-commit so callers can read created records
+       immediately. JSON clone is used (the DB is plain serialisable data) to
+       avoid any dependency on structuredClone availability. */
+    const next = JSON.parse(JSON.stringify(dbRef.current)) as DB;
     fn(next);
     dbRef.current = next;
     setDb(next);
@@ -798,6 +808,130 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       audit(dd, label, 'document', rec.title, rec.id);
     });
   }, [mutate]);
+
+  /* ── tagging ── */
+  const addDocTag = useCallback((docId: string, tag: string) => {
+    const t = tag.trim().toLowerCase();
+    if (!t) return;
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      rec.tags = Array.from(new Set([...(rec.tags ?? []), t]));
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, `Tagged document "${t}"`, 'document', rec.title, rec.id);
+    });
+  }, [mutate]);
+
+  const removeDocTag = useCallback((docId: string, tag: string) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      rec.tags = (rec.tags ?? []).filter((x) => x !== tag);
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, `Removed tag "${tag}"`, 'document', rec.title, rec.id);
+    });
+  }, [mutate]);
+
+  /* ── edit locking ── */
+  const lockDocument = useCallback((docId: string) => {
+    if (!me) return;
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      rec.lock = { userId: me.id, userName: me.name, at: new Date().toISOString() };
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, 'Locked document for editing', 'document', rec.title, rec.id);
+    });
+    toast('Document locked — others can view but not edit');
+  }, [mutate, me, toast]);
+
+  const unlockDocument = useCallback((docId: string) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      rec.lock = null;
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, 'Released edit lock', 'document', rec.title, rec.id);
+    });
+    toast('Edit lock released');
+  }, [mutate, toast]);
+
+  /* ── sharing within the organisation ── */
+  const shareDocument = useCallback((docId: string, share: { userId?: string; departmentId?: string; name: string }) => {
+    if (!me) return;
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      rec.shares = [
+        ...(rec.shares ?? []).filter((s) => s.userId !== share.userId || !share.userId),
+        { id: uid('shr'), userId: share.userId, departmentId: share.departmentId, name: share.name, grantedBy: me.name, at: new Date().toISOString() },
+      ];
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, `Shared document with ${share.name}`, 'document', rec.title, rec.id);
+      if (share.userId && share.userId !== me.id) {
+        notify(dd, share.userId, 'System', 'A document was shared with you', `${rec.title} — shared by ${me.name}`, { name: 'documents', id: rec.id });
+      }
+    });
+    toast(`Shared with ${share.name}`);
+  }, [mutate, me, toast]);
+
+  const unshareDocument = useCallback((docId: string, shareId: string) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      const gone = (rec.shares ?? []).find((s) => s.id === shareId);
+      rec.shares = (rec.shares ?? []).filter((s) => s.id !== shareId);
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, `Revoked share${gone ? ` from ${gone.name}` : ''}`, 'document', rec.title, rec.id);
+    });
+    toast('Share revoked');
+  }, [mutate, toast]);
+
+  /* ── compression ── */
+  const compressDocument = useCallback((docId: string) => {
+    if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
+    let saved = 0;
+    mutate((dd) => {
+      const rec = own(dd, dd.documents, docId);
+      if (!rec) return;
+      if (rec.originalKb) return; /* already optimised */
+      const original = rec.sizeKb;
+      /* large files compress more aggressively; small files barely change */
+      const ratio = original > 2048 ? 0.38 : original > 512 ? 0.55 : 0.8;
+      rec.originalKb = original;
+      rec.sizeKb = Math.max(8, Math.round(original * ratio));
+      saved = original - rec.sizeKb;
+      rec.updatedAt = new Date().toISOString();
+      audit(dd, `Compressed document (saved ${saved} KB)`, 'document', rec.title, rec.id);
+    });
+    if (saved > 0) toast(`Compressed — saved ${saved} KB`, 'success');
+    else toast('Already optimised', 'info');
+  }, [mutate, toast]);
+
+  /* ── secure (password-gated) deletion of sensitive files ── */
+  const secureDeleteDocument = useCallback((docId: string, password: string) => {
+    if (!me) return { ok: false, error: 'Not signed in.' };
+    if (!verifySecret(password, me.pwdHash ?? hashSecret('cortexa'))) {
+      /* record the blocked attempt without touching live React state */
+      mutate((dd) => { secAudit(dd, 'Secure delete blocked — incorrect password', `${me.name} attempted to delete a sensitive file`, 'denied', me); });
+      return { ok: false, error: 'Incorrect password. The file was not deleted.' };
+    }
+    const rec = db.documents.find((x) => x.id === docId && x.orgId === me.orgId);
+    if (!rec) return { ok: false, error: 'File not found.' };
+    mutate((dd) => {
+      dd.documents = dd.documents.filter((x) => x.id !== docId);
+      secAudit(dd, `Secure-deleted sensitive file "${rec.title}"`, `${me.name} · password verified`, 'success', me);
+      audit(dd, 'Secure-deleted sensitive file (password verified)', 'document', rec.title, rec.id);
+    });
+    toast('File securely deleted and logged to the audit trail');
+    return { ok: true };
+  }, [db, me, mutate, toast]);
 
   const restoreVersion = useCallback((docId: string, version: string) => {
     if (!own(db, db.documents, docId)) { logDenied('document', docId); return; }
@@ -1615,6 +1749,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     nextRef, canUser, searchAll, askAssistant,
     registerCorrespondence, updateCorrespondence, respondCorrespondence,
     addDocument, addDocumentVersion, updateDocument, restoreVersion, addComment,
+    addDocTag, removeDocTag, lockDocument, unlockDocument, shareDocument, unshareDocument,
+    compressDocument, secureDeleteDocument,
     createMatter, updateMatter, linkToMatter,
     createMeeting, updateMeeting, setMeetingResponse, completeMeeting,
     createTask, updateTask, decideApproval, createMemo, registerEmail,

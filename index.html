@@ -25,8 +25,96 @@
       href="https://fonts.googleapis.com/css2?family=Archivo:ital,wght@0,500;0,600;0,700;0,800;0,900;1,600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
+    <style>
+      /* Inline boot styles — independent of the app bundle so a startup
+         failure always produces visible feedback, never a blank page. */
+      html, body { margin: 0; padding: 0; }
+      #boot-splash {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: #0e3a32; color: #f1f2ec;
+        font-family: "Archivo", "IBM Plex Sans", system-ui, sans-serif;
+      }
+      #boot-splash .seal {
+        width: 52px; height: 52px; border-radius: 12px;
+        border: 2px solid #d3a44c; display: flex; align-items: center; justify-content: center;
+        font-weight: 800; font-size: 24px; color: #d3a44c; letter-spacing: -0.03em;
+        animation: bootpulse 1.4s ease-in-out infinite;
+      }
+      #boot-splash .name { font-weight: 800; font-size: 20px; letter-spacing: 0.02em; }
+      #boot-splash .sub { font-size: 12px; opacity: 0.65; }
+      #boot-splash .bar { width: 180px; height: 3px; background: rgba(255,255,255,0.15); border-radius: 3px; overflow: hidden; }
+      #boot-splash .bar i { display: block; height: 100%; width: 40%; background: #d3a44c; border-radius: 3px; animation: bootslide 1.2s ease-in-out infinite; }
+      @keyframes bootpulse { 0%,100% { opacity: 0.7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.04); } }
+      @keyframes bootslide { 0% { transform: translateX(-120%); } 100% { transform: translateX(420%); } }
+      #boot-error {
+        position: fixed; inset: 0; display: none; flex-direction: column;
+        align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center;
+        background: #0b2b26; color: #f1f2ec; box-sizing: border-box;
+        font-family: "IBM Plex Sans", system-ui, sans-serif;
+      }
+      #boot-error h1 { font-family: "Archivo", sans-serif; font-size: 19px; margin: 0; }
+      #boot-error p { font-size: 13px; opacity: 0.8; margin: 0; max-width: 520px; line-height: 1.6; }
+      #boot-error code {
+        display: inline-block; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 6px; padding: 6px 12px; font-size: 12px; max-width: 90vw; overflow: auto;
+      }
+      #boot-error button {
+        background: #d3a44c; color: #0b2b26; border: 0; border-radius: 8px;
+        padding: 10px 22px; font-weight: 700; font-size: 13px; cursor: pointer;
+      }
+    </style>
+    <script>
+      /* Bootstrap watchdog: runs before the app bundle. If CORTEXA fails to
+         start for ANY reason, a readable diagnostic is shown instead of a
+         blank screen. React replaces #boot-splash once it mounts. */
+      (function () {
+        window.__cortexaBoot = { started: Date.now(), mounted: false };
+        function showDiag(title, detail) {
+          var el = document.getElementById('boot-error');
+          if (!el) return;
+          document.getElementById('boot-error-title').textContent = title;
+          document.getElementById('boot-error-detail').textContent = detail || '';
+          el.style.display = 'flex';
+          var splash = document.getElementById('boot-splash');
+          if (splash) splash.style.display = 'none';
+        }
+        window.addEventListener('error', function (e) {
+          showDiag('CORTEXA hit a startup error', (e && e.message) || 'Unknown error');
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          var reason = e && e.reason ? (e.reason.message || String(e.reason)) : 'Unknown rejection';
+          showDiag('CORTEXA hit a startup error', reason);
+        });
+        /* If React never mounts within 9s, surface a hint rather than spinning. */
+        setTimeout(function () {
+          if (!window.__cortexaBoot.mounted) {
+            showDiag(
+              'CORTEXA is taking a while to start',
+              'The application bundle may still be loading, or script execution is blocked in this environment. Try a hard refresh (Ctrl/Cmd+Shift+R). If it persists on Railway, confirm the service is building the "institutional-workflow-platform-20e55" branch with the Dockerfile.'
+            );
+          }
+        }, 9000);
+      })();
+    </script>
   </head>
   <body>
+    <div id="boot-splash">
+      <div class="seal">C</div>
+      <div class="name">CORTEXA</div>
+      <div class="bar"><i></i></div>
+      <div class="sub">Opening the institutional register…</div>
+    </div>
+    <div id="boot-error" role="alert">
+      <h1 id="boot-error-title">CORTEXA hit a startup error</h1>
+      <p>Something prevented the application from starting. The details below can help diagnose it.</p>
+      <code id="boot-error-detail"></code>
+      <p style="font-size:11px;opacity:0.6">A stale cached build is the most common cause — try a hard refresh (Ctrl/Cmd+Shift+R).</p>
+      <button onclick="location.reload()">Reload workspace</button>
+    </div>
+    <noscript>
+      <div style="padding:40px;font-family:sans-serif">CORTEXA requires JavaScript to run. Please enable JavaScript and reload.</div>
+    </noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

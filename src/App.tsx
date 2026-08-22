@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { StoreProvider, useStore } from './lib/store';
 import { Shell } from './components/shell';
 import { GlobalSearch } from './components/shell';
@@ -11,15 +11,21 @@ import { Meetings } from './views/Meetings';
 import { TasksView } from './views/TasksView';
 import { CalendarView } from './views/CalendarView';
 import { ContactsView, DepartmentsView } from './views/People';
-import { Reports } from './views/Reports';
 import { ArchiveView } from './views/ArchiveView';
-import { Admin } from './views/Admin';
 import { SecretaryDesk, ExecutiveDesk } from './views/Desk';
-import { FinanceView } from './views/Finance';
-import { DeadlinesView, AnnouncementsView, AssetsView } from './views/Operations';
 import { EmptyState, Chip } from './components/ui';
 import { IcSearch, IcEnvelope, IcFile, IcSeal, IcUsers, IcCheckSquare, IcBook } from './components/icons';
 import type { Route } from './lib/types';
+
+/* Heavy modules are code-split so the first paint stays fast; they stream in
+   on demand. A failed chunk falls through to the error boundary, never a
+   blank page. */
+const Reports = lazy(() => import('./views/Reports').then((m) => ({ default: m.Reports })));
+const Admin = lazy(() => import('./views/Admin').then((m) => ({ default: m.Admin })));
+const FinanceView = lazy(() => import('./views/Finance').then((m) => ({ default: m.FinanceView })));
+const DeadlinesView = lazy(() => import('./views/Operations').then((m) => ({ default: m.DeadlinesView })));
+const AnnouncementsView = lazy(() => import('./views/Operations').then((m) => ({ default: m.AnnouncementsView })));
+const AssetsView = lazy(() => import('./views/Operations').then((m) => ({ default: m.AssetsView })));
 
 function SearchView() {
   const { route, searchAll, nav } = useStore();
@@ -115,8 +121,29 @@ function Router() {
 
   return (
     <Shell>
-      <div key={`${route.name}:${route.id ?? ''}:${route.q ?? ''}`} className="anim-fade">{view}</div>
+      <Suspense fallback={<PageSkeleton />}>
+        <div key={`${route.name}:${route.id ?? ''}:${route.q ?? ''}`} className="anim-fade">{view}</div>
+      </Suspense>
     </Shell>
+  );
+}
+
+/* Skeleton shown while a code-split module streams in. */
+function PageSkeleton() {
+  return (
+    <div className="space-y-4" aria-busy="true" aria-label="Loading">
+      <div className="space-y-2">
+        <div className="skeleton h-3 w-32 rounded" />
+        <div className="skeleton h-7 w-72 rounded" />
+        <div className="skeleton h-3 w-96 max-w-full rounded" />
+      </div>
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div className="skeleton h-24 rounded-lg" />
+        <div className="skeleton h-24 rounded-lg" />
+        <div className="skeleton h-24 rounded-lg" />
+      </div>
+      <div className="skeleton h-64 rounded-lg" />
+    </div>
   );
 }
 

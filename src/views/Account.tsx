@@ -149,6 +149,8 @@ function SecurityTab() {
             The authentication layer is architected for TOTP second factors. In production this enrols an authenticator app and requires the code at sign-in — especially for administrative actions.
           </p>
         </div>
+
+        <BiometricCard />
       </div>
 
       <div className="card p-5">

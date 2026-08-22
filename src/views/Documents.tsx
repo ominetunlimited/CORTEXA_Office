@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useStore, canSee } from '../lib/store';
-import { PageHead, Chip, EmptyState, Drawer, KV, Avatar, Field, Modal, Confirm, Hi } from '../components/ui';
+import { PageHead, Chip, EmptyState, Drawer, KV, Avatar, Field, Modal, Confirm, Hi, Seg } from '../components/ui';
 import { QAHost } from '../components/quick';
 import {
   DOC_CATEGORIES, DOC_STATUS_META, SECURITY_META, SECURITY_LEVELS, APPROVAL_META,
@@ -8,7 +8,7 @@ import {
 } from '../lib/types';
 import { cx, download, fileSizeLabel, fmtDate, fmtDateTime, relTime } from '../lib/utils';
 import { isDocOffline, saveDocOffline, removeDocOffline } from '../lib/offline';
-import { IcFile, IcSearch, IcPlus, IcDownload, IcPaperclip, IcHistory, IcStamp, IcArchive, IcRestore, IcScan, IcCheck, IcX, IcEdit, IcLock, IcSeal, IcPrinter } from '../components/icons';
+import { IcFile, IcSearch, IcPlus, IcDownload, IcPaperclip, IcHistory, IcStamp, IcArchive, IcRestore, IcScan, IcCheck, IcX, IcEdit, IcLock, IcSeal, IcPrinter, IcUsers, IcShield } from '../components/icons';
 
 export function Documents() {
   const { db, me, users, departments, route, nav, canUser } = useStore();
@@ -95,7 +95,13 @@ export function Documents() {
 
 /* ── detail ──────────────────────────────────────────────────────────── */
 function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
-  const { db, me, users, nav, canUser, addDocumentVersion, updateDocument, restoreVersion, addComment, linkToMatter, archiveRecord, restoreRecord, decideApproval, toast } = useStore();
+  const {
+    db, me, users, departments, nav, canUser,
+    addDocumentVersion, updateDocument, restoreVersion, addComment, linkToMatter,
+    archiveRecord, restoreRecord, decideApproval,
+    addDocTag, removeDocTag, lockDocument, unlockDocument, shareDocument, unshareDocument,
+    compressDocument, secureDeleteDocument, toast,
+  } = useStore();
   const [verOpen, setVerOpen] = useState(false);
   const [decideOpen, setDecideOpen] = useState<Exclude<ApprovalState, 'Pending'> | null>(null);
   const [archiveAsk, setArchiveAsk] = useState(false);
@@ -104,6 +110,15 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
   const [titleDraft, setTitleDraft] = useState(d.title);
   const [offline, setOffline] = useState(() => isDocOffline(d.id));
   const readOnly = !canUser('create');
+  /* security & collaboration state */
+  const [tagInput, setTagInput] = useState('');
+  const [shareOpen, setShareOpen] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
+
+  const lockedByMe = d.lock?.userId === me?.id;
+  const lockedByOther = !!d.lock && d.lock.userId !== me?.id;
+  const isSensitive = d.security === 'Confidential' || d.security === 'Highly Confidential';
+  const canModify = canUser('create') && !lockedByOther;
 
   const toggleOffline = () => {
     if (offline) {
@@ -157,6 +172,22 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
         </div>
       }>
       <div className="space-y-4">
+        {lockedByOther && (
+          <div className="flex items-center gap-2.5 rounded-md border border-brass-300 bg-brass-50 px-3.5 py-2.5 anim-fade">
+            <span className="text-brass-600"><IcLock size={16} /></span>
+            <p className="text-[12.5px] text-brass-700 leading-snug">
+              <span className="font-semibold">{d.lock?.userName}</span> has locked this file for editing
+              {d.lock ? ` (${relTime(d.lock.at)})` : ''}. You can view and download, but changes are blocked until the lock is released.
+            </p>
+          </div>
+        )}
+        {lockedByMe && (
+          <div className="flex items-center gap-2.5 rounded-md border border-pine-300 bg-pine-50 px-3.5 py-2.5 anim-fade">
+            <span className="text-pine-600"><IcLock size={16} /></span>
+            <p className="text-[12.5px] text-pine-700 flex-1">You hold the edit lock — others can view but not modify.</p>
+            <button className="btn-ghost btn-sm" onClick={() => unlockDocument(d.id)}>Release lock</button>
+          </div>
+        )}
         <div>
           {renaming ? (
             <div className="flex gap-2 items-center">
@@ -173,7 +204,11 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
               )}
             </div>
           )}
-          <p className="text-[11.5px] font-mono text-ink-faint mt-1">{d.fileName} · {fileSizeLabel(d.sizeKb)} · {d.versions.length} version{d.versions.length === 1 ? '' : 's'}</p>
+          <p className="text-[11.5px] font-mono text-ink-faint mt-1">
+            {d.fileName} · {fileSizeLabel(d.sizeKb)}
+            {d.originalKb ? ` (compressed from ${fileSizeLabel(d.originalKb)})` : ''}
+            {' · '}{d.versions.length} version{d.versions.length === 1 ? '' : 's'}
+          </p>
         </div>
 
         {/* preview */}
@@ -252,6 +287,71 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
           </div>
         </div>
 
+        {/* security & collaboration */}
+        <div className="card p-3.5">
+          <p className="label flex items-center gap-1.5"><IcLock size={12} /> Security & collaboration</p>
+
+          {/* tags */}
+          <div className="mt-1.5">
+            <p className="text-[11px] font-semibold text-ink-faint uppercase tracking-wide mb-1.5">Tags</p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(d.tags ?? []).map((t) => (
+                <span key={t} className="chip bg-pine-100 text-pine-700 !py-1 group">
+                  #{t}
+                  {canModify && (
+                    <button aria-label={`Remove tag ${t}`} onClick={() => removeDocTag(d.id, t)}
+                      className="ml-0.5 text-pine-500 hover:text-clay-600 cursor-pointer"><IcX size={11} /></button>
+                  )}
+                </span>
+              ))}
+              {canModify && (
+                <input className="input !h-7 !w-36 !text-[12px]" placeholder="Add tag…" value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && tagInput.trim()) { addDocTag(d.id, tagInput); setTagInput(''); } }}
+                  onBlur={() => { if (tagInput.trim()) { addDocTag(d.id, tagInput); setTagInput(''); } }} />
+              )}
+              {(d.tags ?? []).length === 0 && !canModify && <span className="text-[11.5px] text-ink-faint">No tags</span>}
+            </div>
+          </div>
+
+          {/* sharing */}
+          <div className="mt-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-[11px] font-semibold text-ink-faint uppercase tracking-wide">Shared with</p>
+              {canUser('create') && <button className="btn-ghost btn-sm !h-6.5" onClick={() => setShareOpen(true)}><IcUsers size={12} /> Share</button>}
+            </div>
+            {(d.shares ?? []).length === 0 ? (
+              <p className="text-[11.5px] text-ink-faint">Private — only the owner, authorised roles and explicit grants can access.</p>
+            ) : (
+              <div className="space-y-1">
+                {(d.shares ?? []).map((s) => (
+                  <div key={s.id} className="flex items-center gap-2 text-[12px]">
+                    <span className="dot bg-steel-500" />
+                    <span className="text-ink flex-1 truncate">{s.name} <span className="text-ink-faint">· by {s.grantedBy} · {relTime(s.at)}</span></span>
+                    {canUser('create') && <button className="btn-ghost btn-sm !h-6 !text-clay-600" onClick={() => unshareDocument(d.id, s.id)}>Revoke</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* lock + compress + secure delete */}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {!d.lock && canUser('create') && !lockedByOther && (
+              <button className="btn-ghost btn-sm" onClick={() => lockDocument(d.id)}><IcLock size={12} /> Lock for editing</button>
+            )}
+            {canUser('create') && !d.originalKb && (
+              <button className="btn-ghost btn-sm" onClick={() => compressDocument(d.id)} title="Reduce stored size of a heavy file"><IcDownload size={12} /> Compress file</button>
+            )}
+            {isSensitive && canUser('archive') && (
+              <button className="btn-ghost btn-sm !text-clay-600" onClick={() => setDelOpen(true)}><IcX size={12} /> Secure delete</button>
+            )}
+          </div>
+          {isSensitive && (
+            <p className="text-[10.5px] text-ink-faint mt-2 flex items-center gap-1"><IcShield size={11} /> Classified {d.security} — deletion requires your password and is written to the immutable audit trail.</p>
+          )}
+        </div>
+
         {/* comments */}
         <div>
           <p className="label flex items-center gap-1.5"><IcPaperclip size={12} /> Comments ({comments.length})</p>
@@ -302,7 +402,106 @@ function DocDetail({ d, onClose }: { d: DocumentRecord; onClose: () => void }) {
       <Confirm open={archiveAsk} onClose={() => setArchiveAsk(false)} title="Archive this document?"
         body={<>Archiving moves <span className="font-semibold text-ink">{d.title}</span> to the institutional archive under its retention policy. It remains restorable; versions are preserved.</>}
         confirmLabel="Archive document" onConfirm={() => { archiveRecord('document', d.id); onClose(); }} />
+
+      <ShareModal open={shareOpen} onClose={() => setShareOpen(false)} docTitle={d.title}
+        people={users.filter((u) => u.orgId === me?.orgId && u.id !== me?.id && u.active)}
+        depts={departments}
+        onShare={(s) => { shareDocument(d.id, s); setShareOpen(false); }} />
+
+      <SecureDeleteModal open={delOpen} onClose={() => setDelOpen(false)} doc={d}
+        onDelete={(pw) => secureDeleteDocument(d.id, pw)} onDone={onClose} />
     </Drawer>
+  );
+}
+
+/* ── share dialog ────────────────────────────────────────────────────── */
+function ShareModal({ open, onClose, docTitle, people, depts, onShare }: {
+  open: boolean; onClose: () => void; docTitle: string;
+  people: { id: string; name: string; title: string }[];
+  depts: { id: string; name: string }[];
+  onShare: (s: { userId?: string; departmentId?: string; name: string }) => void;
+}) {
+  const [kind, setKind] = useState<'user' | 'department'>('user');
+  const [userId, setUserId] = useState('');
+  const [deptId, setDeptId] = useState('');
+  const ready = kind === 'user' ? !!userId : !!deptId;
+  const submit = () => {
+    if (kind === 'user') {
+      const u = people.find((p) => p.id === userId);
+      if (u) onShare({ userId: u.id, name: u.name });
+    } else {
+      const dep = depts.find((x) => x.id === deptId);
+      if (dep) onShare({ departmentId: dep.id, name: `Dept — ${dep.name}` });
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="Share within the organisation" w="max-w-md"
+      subtitle={<span>Grant access to <span className="font-semibold text-ink">{docTitle}</span>. The grant is recorded and revocable.</span>}
+      footer={<><button className="btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn-primary" disabled={!ready} onClick={submit}>Grant access</button></>}>
+      <Seg value={kind} onChange={setKind} options={[{ v: 'user', label: 'A person' }, { v: 'department', label: 'A department' }]} />
+      <div className="mt-3">
+        {kind === 'user' ? (
+          <Field label="Person" req>
+            <select className="input" value={userId} onChange={(e) => setUserId(e.target.value)}>
+              <option value="">Select person…</option>
+              {people.map((p) => <option key={p.id} value={p.id}>{p.name} — {p.title}</option>)}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Department" req>
+            <select className="input" value={deptId} onChange={(e) => setDeptId(e.target.value)}>
+              <option value="">Select department…</option>
+              {depts.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </Field>
+        )}
+        <p className="text-[11px] text-ink-faint mt-2">Sharing never weakens the file's security classification — recipients still need the matching clearance.</p>
+      </div>
+    </Modal>
+  );
+}
+
+/* ── password-gated secure delete ───────────────────────────────────── */
+function SecureDeleteModal({ open, onClose, doc, onDelete, onDone }: {
+  open: boolean; onClose: () => void; doc: DocumentRecord;
+  onDelete: (password: string) => { ok: boolean; error?: string };
+  onDone: () => void;
+}) {
+  const [pwd, setPwd] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = () => {
+    setErr('');
+    if (!pwd) { setErr('Enter your password to confirm.'); return; }
+    setBusy(true);
+    /* small delay so the re-authentication feels deliberate, not instant */
+    window.setTimeout(() => {
+      const r = onDelete(pwd);
+      setBusy(false);
+      if (!r.ok) { setErr(r.error ?? 'Unable to delete.'); setPwd(''); return; }
+      setPwd('');
+      onDone();
+    }, 450);
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="Secure delete — sensitive file" w="max-w-md"
+      subtitle={<span><span className="font-semibold text-ink">{doc.title}</span> is classified <span className="font-semibold text-clay-600">{doc.security}</span>.</span>}
+      footer={<><button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn-danger" disabled={busy} onClick={submit}>
+          {busy ? <><span className="animate-pulse">Verifying…</span></> : 'Verify & delete permanently'}
+        </button></>}>
+      <div className="rounded-md border border-clay-100 bg-clay-50 px-3 py-2.5 text-[12px] text-clay-700 leading-relaxed">
+        This permanently removes the file and all its versions from the register. It cannot be restored from the archive.
+        Your password is required and the deletion is written to the immutable audit trail.
+      </div>
+      <div className="mt-3">
+        <Field label="Confirm with your password" req error={err || undefined}>
+          <input type="password" className="input" value={pwd} autoComplete="current-password"
+            onChange={(e) => setPwd(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} autoFocus />
+        </Field>
+      </div>
+    </Modal>
   );
 }
 

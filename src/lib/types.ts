@@ -377,6 +377,20 @@ export interface DocumentRecord {
   archived: boolean;
   createdAt: string;
   updatedAt: string;
+  /* document security & collaboration */
+  tags?: string[];                       // free-form labels for filing & search
+  shares?: DocShare[];                   // explicit in-org grants (user or department)
+  lock?: { userId: string; userName: string; at: string } | null; // edit lock
+  originalKb?: number;                   // size before compression (sizeKb = stored)
+}
+
+export interface DocShare {
+  id: string;
+  userId?: string;
+  departmentId?: string;
+  name: string;              // display label (user name or department)
+  grantedBy: string;         // user name who shared
+  at: string;
 }
 
 export interface MatterEvent {
