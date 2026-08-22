@@ -180,7 +180,22 @@ function loadDb(): DB {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as DB;
-      if (parsed && parsed.version === SEED_VERSION) return parsed;
+      /* accept the snapshot only if the version matches AND the core
+         collections are present — anything else reseeds cleanly */
+      const ok =
+        parsed &&
+        parsed.version === SEED_VERSION &&
+        Array.isArray(parsed.orgs) &&
+        Array.isArray(parsed.users) &&
+        Array.isArray(parsed.correspondence) &&
+        Array.isArray(parsed.documents) &&
+        Array.isArray(parsed.matters) &&
+        Array.isArray(parsed.meetings) &&
+        Array.isArray(parsed.tasks) &&
+        parsed.session &&
+        parsed.counters &&
+        parsed.security;
+      if (ok) return parsed;
     }
   } catch { /* corrupted — reseed */ }
   return buildSeed();

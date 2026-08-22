@@ -120,10 +120,58 @@ function Router() {
   );
 }
 
+/* last-line-of-defence boundary — the workspace must never render a blank
+   page; users get a branded recovery screen with safe restart options.     */
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error?: Error }> {
+  state: { error?: Error } = {};
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('Cortexa recovered from a render error:', error);
+  }
+
+  private hardReset = () => {
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith('cortexa.'))
+        .forEach((k) => localStorage.removeItem(k));
+      if ('caches' in window) {
+        void caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))));
+      }
+    } catch { /* storage unavailable */ }
+    window.location.reload();
+  };
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="min-h-screen ledger-bg flex items-center justify-center p-6">
+        <div className="card max-w-md w-full p-7 anim-pop">
+          <p className="font-display font-extrabold text-[20px] text-ink tracking-tight">The registry hit an unexpected snag</p>
+          <p className="text-[13px] text-ink-soft mt-2 leading-relaxed">
+            Your institutional records are safe in this browser. Reloading usually resolves this;
+            if it persists, a safe restart clears only the local application cache.
+          </p>
+          <p className="text-[11px] font-mono text-ink-faint mt-3 break-words">{this.state.error.message}</p>
+          <div className="flex gap-2 mt-5">
+            <button className="btn-primary flex-1" onClick={() => window.location.reload()}>Reload workspace</button>
+            <button className="btn-ghost flex-1" onClick={this.hardReset}>Safe restart</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 export default function App() {
   return (
-    <StoreProvider>
-      <Router />
-    </StoreProvider>
+    <ErrorBoundary>
+      <StoreProvider>
+        <Router />
+      </StoreProvider>
+    </ErrorBoundary>
   );
 }

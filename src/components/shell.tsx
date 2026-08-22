@@ -53,9 +53,10 @@ function LiveRegister() {
 /* live connectivity pill — ONLINE / OFFLINE / SYNCING */
 function NetworkPill() {
   const { toast } = useStore();
-  const net = useNetwork((queued: number) => {
+  const onSynced = React.useCallback((queued: number) => {
     toast(queued > 0 ? `Synced successfully — ${queued} offline draft${queued === 1 ? '' : 's'} reconciled` : 'Back online', 'success');
-  });
+  }, [toast]);
+  const net = useNetwork(onSynced);
   const pending = queueSize();
   const meta: Record<string, { label: string; cls: string; dot: string; title: string }> = {
     online: { label: 'Online', cls: 'bg-moss-100 text-moss-700', dot: 'bg-moss-600', title: 'Connected — changes save to the register' },

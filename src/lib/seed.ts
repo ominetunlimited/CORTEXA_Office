@@ -7,7 +7,7 @@ import type {
 import { d, dateOnly, pad, uid, initials } from './utils';
 import { hashSecret, deviceLabel } from './security';
 
-export const SEED_VERSION = 9;
+export const SEED_VERSION = 10;
 
 /* demo tenant credential — documented dev-only secret, hashed before storage */
 const DEMO_PWD_HASH = hashSecret('cortexa');

@@ -2,8 +2,8 @@
   "name": "CORTEXA — Institutional Registry",
   "short_name": "CORTEXA",
   "description": "Digital secretariat: correspondence registry, matters, documents, meetings, tasks and institutional memory in one secure workspace.",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f1f2ec",
@@ -12,13 +12,13 @@
   "categories": ["business", "productivity"],
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/icon.svg",
+      "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
