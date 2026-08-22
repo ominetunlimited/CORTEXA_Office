@@ -145,6 +145,109 @@ export interface User {
   aiEnabled: boolean;         // per-seat AI access (max org.aiSeats)
 }
 
+/* ── executive authority domain ───────────────────────────────────── */
+
+/** Granular executive grants (§15). A role alone never implies these. */
+export type ExecGrant =
+  | 'EXECUTIVE_DESK_ACCESS'
+  | 'VIEW_EXECUTIVE_CORRESPONDENCE'
+  | 'CREATE_EXECUTIVE_DRAFT'
+  | 'MANAGE_EXECUTIVE_CALENDAR'
+  | 'MANAGE_EXECUTIVE_MEETINGS'
+  | 'PREPARE_EXECUTIVE_REPORT'
+  | 'VIEW_EXECUTIVE_REPORT'
+  | 'APPROVE_EXECUTIVE_DOCUMENT'
+  | 'MANAGE_EXECUTIVE_TASKS'
+  | 'VIEW_EXECUTIVE_CONFIDENTIAL_RECORDS';
+export const EXEC_GRANTS: ExecGrant[] = [
+  'EXECUTIVE_DESK_ACCESS', 'VIEW_EXECUTIVE_CORRESPONDENCE', 'CREATE_EXECUTIVE_DRAFT',
+  'MANAGE_EXECUTIVE_CALENDAR', 'MANAGE_EXECUTIVE_MEETINGS', 'PREPARE_EXECUTIVE_REPORT',
+  'VIEW_EXECUTIVE_REPORT', 'APPROVE_EXECUTIVE_DOCUMENT', 'MANAGE_EXECUTIVE_TASKS',
+  'VIEW_EXECUTIVE_CONFIDENTIAL_RECORDS',
+];
+
+export type OfficeRole = 'Executive' | 'Chief of Staff' | 'Executive Secretary' | 'Special Assistant' | 'Personal Assistant';
+
+/** Executive inbox states (§19). */
+export type ExecInboxState = 'New' | 'Read' | 'Under Review' | 'Action Required' | 'Delegated' | 'Responded' | 'Archived';
+export const EXEC_INBOX_STATES: ExecInboxState[] = ['New', 'Read', 'Under Review', 'Action Required', 'Delegated', 'Responded', 'Archived'];
+
+export interface ExecutiveProfile {
+  id: string;
+  orgId: string;
+  userId: string;             // the user who holds this office
+  title: string;              // e.g. Vice Chancellor, Registrar, Bursar
+  execRef: string;            // e.g. EXEC-001
+  level?: string;             // optional executive level
+  departmentId?: string;
+  officeTeam: { userId: string; officeRole: OfficeRole }[];
+  createdAt: string;
+}
+
+export interface ExecutiveDelegation {
+  id: string;
+  orgId: string;
+  executiveId: string;        // ExecutiveProfile.id
+  delegateUserId: string;
+  grants: ExecGrant[];
+  startsAt: string;
+  expiresAt?: string;         // temporary delegation (§42) — auto-expires
+  acting?: boolean;           // acting executive appointment (§43)
+  revoked: boolean;
+  createdAt: string;
+}
+
+export type DecisionStatus = 'Pending' | 'In Progress' | 'Completed' | 'Overdue' | 'Cancelled';
+export const DECISION_STATUSES: DecisionStatus[] = ['Pending', 'In Progress', 'Completed', 'Overdue', 'Cancelled'];
+
+export interface ExecutiveDecision {
+  id: string;
+  orgId: string;
+  ref: string;                // DEC/2026/001
+  date: string;
+  executiveId: string;        // ExecutiveProfile.id
+  matterId?: string;
+  decision: string;
+  responsibleId?: string;     // officer accountable
+  deadline?: string;
+  status: DecisionStatus;     // Overdue is derived automatically when past deadline
+  supportingDocIds: string[];
+  taskId?: string;            // linked action (§23)
+  createdAt: string;
+}
+
+export type ReportPeriodKind = 'Monthly' | 'Quarterly' | 'Biannual' | 'Annual' | 'Custom';
+
+export interface ReportSection { key: string; label: string; body: string }
+
+export interface ExecutiveReport {
+  id: string;
+  orgId: string;
+  ref: string;
+  title: string;
+  periodKind: ReportPeriodKind;
+  periodFrom: string;         // yyyy-mm-dd
+  periodTo: string;
+  periodLabel: string;        // "Q1 2026", "FY 2026", custom label
+  status: 'Draft' | 'Approved' | 'Archived';
+  autoCompiled: boolean;      // true until a user approves — "Automatically Compiled Draft"
+  sections: ReportSection[];
+  createdBy: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  /* Immutable snapshot taken on approval (§32) — later record edits must not
+     silently rewrite an approved historical report. */
+  snapshot?: {
+    compiledAt: string;
+    approvedAt: string;
+    approvedBy: string;
+    sourceDataAt: string;
+    counts: Record<string, number>;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
 /* ── finance domain ────────────────────────────────────────────────── */
 export type FinKind = 'income' | 'expenditure';
 export type ExpStatus = 'Draft' | 'Submitted' | 'Pending Approval' | 'Approved' | 'Rejected' | 'Paid' | 'Cancelled';
@@ -327,6 +430,9 @@ export interface Correspondence {
   type: CorrType;
   departmentId?: string;
   assignedTo?: string;       // user id
+  routeToUserId?: string;    // direct person-to-person routing (§12) — an executive or any officer
+  routeOfficeId?: string;    // routed to an executive office team (§45) — ExecutiveProfile.id
+  execState?: ExecInboxState; // executive inbox state (§19)
   priority: Priority;
   security: SecurityLevel;
   responseRequired: boolean;
@@ -363,6 +469,8 @@ export interface DocumentRecord {
   category: DocCategory;
   departmentId?: string;
   ownerId: string;
+  routeToUserId?: string;    // directly addressed/routed to a person (e.g. an executive)
+  routeOfficeId?: string;    // routed to an executive office team
   security: SecurityLevel;
   status: 'Draft' | 'In Review' | 'Approved' | 'Circulated' | 'Archived';
   fileName: string;          // original name — metadata only, never a filesystem path
