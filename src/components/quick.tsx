@@ -184,7 +184,7 @@ function CorrForm({ open, onClose, presetDir }: { open: boolean; onClose: () => 
 
 /* ── Upload document ─────────────────────────────────────────────────── */
 function DocForm({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { departments, db, me, addDocument, nav } = useStore();
+  const { departments, db, me, addDocument, nav, toast } = useStore();
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState<DocCategory>('Report');
   const [departmentId, setDepartmentId] = useState('');
@@ -230,12 +230,18 @@ function DocForm({ open, onClose }: { open: boolean; onClose: () => void }) {
     window.setTimeout(() => {
       window.clearInterval(iv);
       setProgress(100);
+      /* heavy files are stored compressed; keep the original size for reporting */
+      const original = sizeKb || 180;
+      const stored = original > 512 ? Math.max(8, Math.round(original * (original > 2048 ? 0.38 : 0.55))) : original;
       const doc = addDocument({
         title: title.trim(), category, departmentId: departmentId || undefined, security,
-        fileName: sanitizeFilename(fileName.trim()), sizeKb: sizeKb || 180,
+        fileName: sanitizeFilename(fileName.trim()),
+        sizeKb: stored,
+        originalKb: stored < original ? original : undefined,
         body: body.trim() || undefined, ocr: isScan, matterId: matterId || undefined,
         status: 'Approved',
       });
+      if (stored < original) toast(`Heavy file compressed on upload — saved ${original - stored} KB`, 'info');
       setUploading(false);
       setProgress(0);
       if (doc) { onClose(); setTitle(''); setFileName(''); setBody(''); setMatterId(''); setTried(false); setFileError(''); nav({ name: 'documents', id: doc.id }); }
